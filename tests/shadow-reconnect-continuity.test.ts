@@ -263,10 +263,10 @@ test('page to shadow handoff is continuity-preserving and does not mark candles 
   for (let index = 0; index < 12; index++) {
     await pipeline.enqueue({ tick: tick(1_000 + index * 1_000, index, 'ws-3') });
   }
-  const handoff = tick(12_050, 100, 'shadow-main-1');
+  const handoff = tick(12_429, 100, 'shadow-main-1');
   await pipeline.enqueue({ tick: handoff });
   for (let index = 1; index <= 8; index++) {
-    await pipeline.enqueue({ tick: tick(12_050 + index * 1_000, 100 + index, 'shadow-main-1') });
+    await pipeline.enqueue({ tick: tick(12_429 + index * 1_000, 100 + index, 'shadow-main-1') });
   }
   await pipeline.drain();
 
@@ -275,11 +275,27 @@ test('page to shadow handoff is continuity-preserving and does not mark candles 
   assert.ok(handoffEvent);
   assert.equal(handoffEvent.previousConnectionId, 'ws-3');
   assert.equal(handoffEvent.connectionId, 'shadow-main-1');
-  assert.equal(handoffEvent.gapMs, 50);
+  assert.equal(handoffEvent.gapMs, 429);
   assert.equal(snapshot.continuityEvents.some((event) => event.eventType === 'SHORT_RECONNECT_GAP'), false);
   assert.equal(snapshot.continuityEvents.filter((event) => event.eventType === 'EPOCH_STARTED').length, 1);
   const boundaryCandles = snapshot.candles.filter((candle) => candle.startTimestamp >= 10_000 && candle.startTimestamp < 15_000);
   assert.equal(boundaryCandles.some((candle) => candle.quality === 'GAP_AFFECTED'), false);
+});
+
+test('shadow to page transition remains a reconnect, not a primary handoff', async () => {
+  const journal = new MemoryJournal();
+  const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
+  await pipeline.initialize(0);
+  for (let index = 0; index < 12; index++) await pipeline.enqueue({ tick: tick(1_000 + index * 1_000, index, 'shadow-main-1') });
+  await pipeline.enqueue({ tick: tick(12_400, 100, 'ws-4') });
+  await pipeline.drain();
+
+  const snapshot = await journal.snapshot();
+  assert.equal(snapshot.continuityEvents.some((event) => event.eventType === 'PRIMARY_TRANSPORT_HANDOFF'), false);
+  const reconnect = snapshot.continuityEvents.find((event) => event.eventType === 'SHORT_RECONNECT_GAP');
+  assert.ok(reconnect);
+  assert.equal(reconnect.previousConnectionId, 'shadow-main-1');
+  assert.equal(reconnect.connectionId, 'ws-4');
 });
 
 test('same market event observed by page and shadow during handoff is journaled only once', async () => {

@@ -9,12 +9,14 @@ function wilson(successes, total, z = 1.96) {
     const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total) / denominator;
     return [Math.max(0, center - margin), Math.min(1, center + margin)];
 }
-function performanceSlices(snapshot, mode) {
+function performanceSlices(snapshot, mode, maxTimingErrorMs = null) {
     const decisionById = new Map(snapshot.decisions.map((decision) => [decision.decisionId, decision]));
     const signalById = new Map(snapshot.signals.map((signal) => [signal.signalId, signal]));
     const stats = new Map();
     for (const result of snapshot.results) {
         if (result.resolutionStatus !== 'RESOLVED' || result.directionalOutcome === 'FLAT')
+            continue;
+        if (maxTimingErrorMs !== null && result.expiryTimingErrorMs > maxTimingErrorMs)
             continue;
         const signal = signalById.get(result.signalId);
         if (!signal)
@@ -37,7 +39,7 @@ function performanceSlices(snapshot, mode) {
         .map(([key, value]) => ({ key, ...value, accuracy: value.resolved === 0 ? null : value.correct / value.resolved }))
         .sort((a, b) => b.resolved - a.resolved || a.key.localeCompare(b.key));
 }
-export function computeAnalytics(snapshot, globalHealth, assetFeedHealth, captureTransport, activeEpisodeCount) {
+export function computeAnalytics(snapshot, globalHealth, assetFeedHealth, captureTransport, activeEpisodeCount, strictSettlementMaxTimingErrorMs, relaxedSettlementMaxTimingErrorMs) {
     const callPutDecisions = snapshot.decisions.filter((decision) => decision.finalDecision === 'CALL' || decision.finalDecision === 'PUT');
     const callPutDecisionCount = callPutDecisions.length;
     const rawCandidateDecisionCount = snapshot.decisions.filter((decision) => decision.arbitrationStatus !== 'NOT_APPLICABLE').length;
@@ -54,8 +56,12 @@ export function computeAnalytics(snapshot, globalHealth, assetFeedHealth, captur
     const resolved = snapshot.results.filter((result) => result.resolutionStatus === 'RESOLVED');
     const unresolvedResultCount = snapshot.results.length - resolved.length;
     const directional = resolved.filter((result) => result.directionalOutcome !== 'FLAT');
-    const correct = directional.filter((result) => result.directionalOutcome === 'CORRECT').length;
-    const interval = wilson(correct, directional.length);
+    const strictDirectional = directional.filter((result) => result.expiryTimingErrorMs <= strictSettlementMaxTimingErrorMs);
+    const relaxedDirectional = directional.filter((result) => result.expiryTimingErrorMs <= relaxedSettlementMaxTimingErrorMs);
+    const strictCorrect = strictDirectional.filter((result) => result.directionalOutcome === 'CORRECT').length;
+    const relaxedCorrect = relaxedDirectional.filter((result) => result.directionalOutcome === 'CORRECT').length;
+    const strictInterval = wilson(strictCorrect, strictDirectional.length);
+    const relaxedInterval = wilson(relaxedCorrect, relaxedDirectional.length);
     const economic = resolved.flatMap((result) => result.economicReturn === null ? [] : [result.economicReturn]);
     const verifiedSettlementCount = resolved.filter((result) => result.settlementMetadata.confidence === 'VERIFIED').length;
     const inferredSettlementCount = resolved.filter((result) => result.settlementMetadata.confidence === 'INFERRED').length;
@@ -90,14 +96,28 @@ export function computeAnalytics(snapshot, globalHealth, assetFeedHealth, captur
         pendingSignalCount,
         resolvedResultCount: resolved.length,
         unresolvedResultCount,
-        resolvedDirectionalSampleSize: directional.length,
-        independentEpisodeResolvedSampleSize: directional.length,
-        directionalCorrectCount: correct,
-        directionalAccuracy: directional.length === 0 ? null : correct / directional.length,
-        directionalWilsonLow: interval?.[0] ?? null,
-        directionalWilsonHigh: interval?.[1] ?? null,
-        strategyPerformance: performanceSlices(snapshot, 'STRATEGY'),
-        timeframePerformance: performanceSlices(snapshot, 'TIMEFRAME'),
+        resolvedDirectionalSampleSize: relaxedDirectional.length,
+        independentEpisodeResolvedSampleSize: relaxedDirectional.length,
+        directionalCorrectCount: relaxedCorrect,
+        directionalAccuracy: relaxedDirectional.length === 0 ? null : relaxedCorrect / relaxedDirectional.length,
+        directionalWilsonLow: relaxedInterval?.[0] ?? null,
+        directionalWilsonHigh: relaxedInterval?.[1] ?? null,
+        strictSettlementMaxTimingErrorMs,
+        relaxedSettlementMaxTimingErrorMs,
+        strictResolvedDirectionalSampleSize: strictDirectional.length,
+        strictDirectionalCorrectCount: strictCorrect,
+        strictDirectionalAccuracy: strictDirectional.length === 0 ? null : strictCorrect / strictDirectional.length,
+        strictDirectionalWilsonLow: strictInterval?.[0] ?? null,
+        strictDirectionalWilsonHigh: strictInterval?.[1] ?? null,
+        relaxedResolvedDirectionalSampleSize: relaxedDirectional.length,
+        relaxedDirectionalCorrectCount: relaxedCorrect,
+        relaxedDirectionalAccuracy: relaxedDirectional.length === 0 ? null : relaxedCorrect / relaxedDirectional.length,
+        relaxedDirectionalWilsonLow: relaxedInterval?.[0] ?? null,
+        relaxedDirectionalWilsonHigh: relaxedInterval?.[1] ?? null,
+        strategyPerformance: performanceSlices(snapshot, 'STRATEGY', relaxedSettlementMaxTimingErrorMs),
+        timeframePerformance: performanceSlices(snapshot, 'TIMEFRAME', relaxedSettlementMaxTimingErrorMs),
+        strictStrategyPerformance: performanceSlices(snapshot, 'STRATEGY', strictSettlementMaxTimingErrorMs),
+        strictTimeframePerformance: performanceSlices(snapshot, 'TIMEFRAME', strictSettlementMaxTimingErrorMs),
         economicSampleSize: economic.length,
         economicIneligibleResolvedCount: resolved.length - economic.length,
         economicCoverageRate: resolved.length === 0 ? null : economic.length / resolved.length,

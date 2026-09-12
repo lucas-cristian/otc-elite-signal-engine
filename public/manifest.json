@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OTC Elite Signal Engine",
-  "version": "1.8.1",
-  "description": "Signal-only quantitative laboratory for Pocket Option OTC research with graceful MAIN-world shadow reconnection continuity",
+  "version": "1.8.2",
+  "description": "Signal-only quantitative laboratory for Pocket Option OTC research with contextual handoff, strict settlement analytics, and graceful MAIN-world shadow continuity",
   "permissions": [
     "storage",
     "unlimitedStorage",

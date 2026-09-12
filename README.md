@@ -8,21 +8,20 @@ The extension never clicks CALL/PUT, never sends `openOrder`, never executes a t
 
 Authentication/session packets used by the recovery socket are ephemeral runtime context. They are not written to IndexedDB, extension storage, logs, datasets, build artifacts, or source control.
 
-## Release 1.8.1
+## Release 1.8.2
 
-Release 1.8.1 is a focused integrity patch on top of the stable MAIN-world shadow transport from v1.8.0. It does not tune strategy scores or thresholds.
+Release 1.8.2 is the final infrastructure hardening pass before longer scientific collection. It does not tune strategy scores, evidence weights, payout rules, or the 15-second continuity threshold.
 
 The release adds:
 
-1. semantic cross-transport tick deduplication during page → shadow handoff;
-2. explicit `PRIMARY_TRANSPORT_HANDOFF` continuity events for lossless source takeover;
-3. no `GAP_AFFECTED` candle marking when the handoff gap is at or below 250 ms and no connection loss was observed;
-4. continued `SHORT_RECONNECT_GAP` handling for real short reconnects under the frozen 15-second continuity threshold;
-5. dataset schema v8 and feed-continuity event schema v3;
-6. stronger Git provenance discovery using npm `INIT_CWD`, `PWD`, and the process working directory;
-7. a build-metadata validation gate that fails when a Git checkout is detected but the compiled artifact does not identify the current `HEAD`.
+1. contextual page → shadow primary handoff classification based on transport role, page session, continuity state, feed identity, and monotonic source timestamps instead of a fixed 250 ms cutoff;
+2. semantic cross-transport tick deduplication during the handoff using exact feed + instrument + source timestamp + price identity within the frozen 2-second dedupe window;
+3. separate STRICT (`expiryTimingErrorMs <= 1000`) and RELAXED (`expiryTimingErrorMs <= 5000`) directional evaluation samples, Wilson intervals, timeframe slices, and contributing-strategy slices;
+4. scientific dataset export blocked when the running build has no Git commit provenance, preventing accidental export from the prebuilt sandbox artifact;
+5. dashboard build-provenance telemetry so the loaded extension visibly reports build ID, source-tree hash, Git commit, working-tree state, and scientific-export readiness;
+6. IndexedDB v11 to prevent mixing v1.8.1 decisions with the new v1.8.2 frozen configuration hash.
 
-The semantic dedupe key is restricted to exact feed + instrument + source timestamp + price matches observed across different transports inside a 2-second window. Same-connection observations are not deduplicated by this rule.
+A `PRIMARY_TRANSPORT_HANDOFF` is now recognized only for PAGE → SHADOW takeover in the same page session with no pending connection-loss signal and source-timestamp continuity inside the normal 15-second feed-continuity window. Reverse SHADOW → PAGE transitions remain ordinary reconnect evidence.
 
 
 ## Verified protocol
@@ -208,7 +207,7 @@ economicReturn = null
 
 ## Scientific dataset
 
-Dataset schema v7 includes:
+Dataset schema v8 includes:
 
 - ticks and payout snapshots;
 - candles;
@@ -220,27 +219,28 @@ Dataset schema v7 includes:
 - capture/shadow transport state;
 - source-tree SHA-256 and Git HEAD/working-tree state when available;
 - canonical dataset checksum and ID.
+- STRICT and RELAXED settlement-timing analytics are computed at runtime; the raw result keeps its exact `expiryTimingErrorMs`.
 
 The dataset never contains the shadow authentication packet or account session secret.
 
 ## Schema versions
 
 ```text
-Application              1.8.1
+Application              1.8.2
 Tick                     v4
 Candle                   v4
 Decision                 v5
 Signal                   v4
 PayoutSnapshot           v3
 Result                   v3
-FeedContinuityEvent      v2
+FeedContinuityEvent      v3
 CaptureTransportSnapshot v4
 TransportEvent           v3
-Dataset                  v7
-IndexedDB                v9
+Dataset                  v8
+IndexedDB                v11
 ```
 
-The IndexedDB version bump intentionally clears incompatible pre-1.8 runtime records once after upgrade.
+The IndexedDB v11 bump intentionally clears pre-v1.8.2 runtime records once after upgrade so analytics never mix the old and new frozen configuration hashes.
 
 ## Build and validation
 

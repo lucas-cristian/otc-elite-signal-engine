@@ -58,11 +58,11 @@ export interface QuantPipelineConfig {
   episodeHorizonMs: number;
   continuityGapAfterMs: number;
   semanticTickDedupWindowMs: number;
-  primaryTransportHandoffMaxMs: number;
+  strictSettlementMaxTimingErrorMs: number;
 }
 
 export const DEFAULT_PIPELINE_CONFIG: QuantPipelineConfig = {
-  appVersion: '1.8.1',
+  appVersion: '1.8.2',
   executionMode: 'LIVE',
   timeframes: ['5s', '10s', '15s', '30s', '60s'],
   expirationSeconds: 60,
@@ -76,7 +76,7 @@ export const DEFAULT_PIPELINE_CONFIG: QuantPipelineConfig = {
   episodeHorizonMs: 68_000,
   continuityGapAfterMs: 15_000,
   semanticTickDedupWindowMs: 2_000,
-  primaryTransportHandoffMaxMs: 250,
+  strictSettlementMaxTimingErrorMs: 1_000,
 };
 
 export class QuantPipeline {
@@ -120,7 +120,7 @@ export class QuantPipeline {
       episodeHorizonMs: config.episodeHorizonMs,
       continuityGapAfterMs: config.continuityGapAfterMs,
       semanticTickDedupWindowMs: config.semanticTickDedupWindowMs,
-      primaryTransportHandoffMaxMs: config.primaryTransportHandoffMaxMs,
+      strictSettlementMaxTimingErrorMs: config.strictSettlementMaxTimingErrorMs,
       protocolRegistryVersion: PROTOCOL_VERIFICATION_REGISTRY_VERSION,
     };
     this.decisionEngine = new DecisionEngine({
@@ -275,9 +275,7 @@ export class QuantPipeline {
 
     if (!existing.continuityBroken && !pageSessionChanged && withinGrace) {
       const primaryHandoff = connectionChanged
-        && existing.pendingConnectionLossAt === null
-        && gapMs <= this.config.primaryTransportHandoffMaxMs
-        && this.isPageShadowTransition(existing.currentConnectionId, tick.connectionId);
+        && this.isContextualPrimaryTransportHandoff(existing, tick, gapMs);
       if (primaryHandoff) {
         await this.appendContinuity(existing, 'PRIMARY_TRANSPORT_HANDOFF', tick.receivedAtEpochMs, 'PRIMARY_TRANSPORT_HANDOFF', gapMs, tick.connectionId);
         existing.currentConnectionId = tick.connectionId;
@@ -509,10 +507,17 @@ export class QuantPipeline {
     return `${tick.marketSourceIdentity.feedId}|${tick.marketSourceIdentity.instrumentId ?? 'UNKNOWN'}|${tick.sourceTimestampEpochMs ?? 'LOCAL'}|${tick.price}`;
   }
 
-  private isPageShadowTransition(previousConnectionId: string, nextConnectionId: string): boolean {
-    const previousShadow = previousConnectionId.startsWith('shadow-main-');
-    const nextShadow = nextConnectionId.startsWith('shadow-main-');
-    return previousShadow !== nextShadow;
+  private isContextualPrimaryTransportHandoff(runtime: AssetRuntime, tick: Tick, gapMs: number): boolean {
+    if (runtime.pendingConnectionLossAt !== null) return false;
+    if (runtime.currentConnectionId.startsWith('shadow-main-')) return false;
+    if (!tick.connectionId.startsWith('shadow-main-')) return false;
+    if (runtime.currentPageSessionId !== tick.pageSessionId) return false;
+    if (gapMs > this.config.continuityGapAfterMs) return false;
+    const previousTick = runtime.latestTick;
+    if (previousTick?.sourceTimestampEpochMs === null || previousTick?.sourceTimestampEpochMs === undefined) return false;
+    if (tick.sourceTimestampEpochMs === null) return false;
+    const sourceDeltaMs = tick.sourceTimestampEpochMs - previousTick.sourceTimestampEpochMs;
+    return sourceDeltaMs >= 0 && sourceDeltaMs <= this.config.continuityGapAfterMs;
   }
 
   private async processPayout(payoutSnapshot: PayoutSnapshot): Promise<void> {

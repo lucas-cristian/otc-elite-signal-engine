@@ -41,10 +41,11 @@ async function load() {
             output.textContent = response.error;
             return;
         }
-        const wilson = response.directionalWilsonLow === null || response.directionalWilsonLow === undefined
-            || response.directionalWilsonHigh === null || response.directionalWilsonHigh === undefined
+        const intervalText = (low, high) => low === null || low === undefined || high === null || high === undefined
             ? 'N/A'
-            : `${percent(response.directionalWilsonLow)} .. ${percent(response.directionalWilsonHigh)}`;
+            : `${percent(low)} .. ${percent(high)}`;
+        const relaxedWilson = intervalText(response.relaxedDirectionalWilsonLow ?? response.directionalWilsonLow, response.relaxedDirectionalWilsonHigh ?? response.directionalWilsonHigh);
+        const strictWilson = intervalText(response.strictDirectionalWilsonLow, response.strictDirectionalWilsonHigh);
         const blockers = response.latestBlockers?.length ? response.latestBlockers.join(', ') : 'none';
         const payoutExpiration = response.latestPayoutExpirationSeconds === null || response.latestPayoutExpirationSeconds === undefined
             ? 'UNKNOWN (not bound by observed chafor schema)'
@@ -63,6 +64,14 @@ async function load() {
             `Protocol verification: ${response.latestProtocolVerificationId ?? 'UNVERIFIED'}`,
             `Protocol registry: ${response.protocolRegistryVersion ?? 'N/A'}`,
             `Tick integrity: ${response.latestTickIntegrity ?? 'N/A'}`,
+            '',
+            'BUILD PROVENANCE',
+            `Build ID: ${response.buildId ?? 'N/A'}`,
+            `Source tree SHA-256: ${response.sourceTreeSha256 ?? 'N/A'}`,
+            `Git provenance: ${response.gitProvenance ?? 'UNAVAILABLE'}`,
+            `Git commit: ${response.gitCommit ?? 'N/A'}`,
+            `Git working tree clean: ${response.gitWorkingTreeClean ?? 'N/A'}`,
+            `Scientific export provenance ready: ${response.scientificBuildProvenanceReady ?? false}`,
             '',
             'CAPTURE RESILIENCE',
             `Transport connected: ${response.captureTransport?.connected ?? false}`,
@@ -121,12 +130,21 @@ async function load() {
             `Latest blockers: ${blockers}`,
             '',
             'REFERENCE DIRECTIONAL EVALUATION',
-            `Independent resolved episode sample: ${response.independentEpisodeResolvedSampleSize ?? response.resolvedDirectionalSampleSize ?? 0}`,
-            `Resolved directional sample: ${response.resolvedDirectionalSampleSize ?? 0}`,
-            `Directional accuracy: ${percent(response.directionalAccuracy)}`,
-            `Wilson 95% interval: ${wilson}`,
-            `By timeframe: ${performance(response.timeframePerformance)}`,
-            `By contributing strategy: ${performance(response.strategyPerformance)}`,
+            `STRICT settlement window: <= ${response.strictSettlementMaxTimingErrorMs ?? 1000} ms`,
+            `Strict resolved episode sample: ${response.strictResolvedDirectionalSampleSize ?? 0}`,
+            `Strict correct: ${response.strictDirectionalCorrectCount ?? 0}`,
+            `Strict directional accuracy: ${percent(response.strictDirectionalAccuracy)}`,
+            `Strict Wilson 95% interval: ${strictWilson}`,
+            `Strict by timeframe: ${performance(response.strictTimeframePerformance)}`,
+            `Strict by contributing strategy: ${performance(response.strictStrategyPerformance)}`,
+            '',
+            `RELAXED settlement window: <= ${response.relaxedSettlementMaxTimingErrorMs ?? 5000} ms`,
+            `Relaxed resolved episode sample: ${response.relaxedResolvedDirectionalSampleSize ?? response.independentEpisodeResolvedSampleSize ?? response.resolvedDirectionalSampleSize ?? 0}`,
+            `Relaxed correct: ${response.relaxedDirectionalCorrectCount ?? 0}`,
+            `Relaxed directional accuracy: ${percent(response.relaxedDirectionalAccuracy ?? response.directionalAccuracy)}`,
+            `Relaxed Wilson 95% interval: ${relaxedWilson}`,
+            `Relaxed by timeframe: ${performance(response.timeframePerformance)}`,
+            `Relaxed by contributing strategy: ${performance(response.strategyPerformance)}`,
             '',
             'ECONOMIC EVALUATION (FAIL-CLOSED)',
             `Latest payout: ${payout(response.latestPayoutRate)}`,

@@ -421,11 +421,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'GET_ANALYTICS') {
         const nowMs = Date.now();
         superviseShadowConnections(nowMs, false);
-        void runtime.then(async ({ journal, pipeline }) => {
+        void runtime.then(async ({ journal, pipeline, buildMetadata }) => {
             await pipeline.watchdog(nowMs);
             await flushTransportEvents();
             const [snapshot, health] = await Promise.all([journal.snapshot(), Promise.resolve(pipeline.getOperationalHealth(nowMs))]);
-            sendResponse(computeAnalytics(snapshot, health, pipeline.getAllAssetFeedOperationalHealth(nowMs), latestCapture(), pipeline.getActiveEpisodeCount(nowMs)));
+            const analytics = computeAnalytics(snapshot, health, pipeline.getAllAssetFeedOperationalHealth(nowMs), latestCapture(), pipeline.getActiveEpisodeCount(nowMs), DEFAULT_PIPELINE_CONFIG.strictSettlementMaxTimingErrorMs, DEFAULT_PIPELINE_CONFIG.maxExpiryResolutionDelayMs);
+            sendResponse({
+                ...analytics,
+                buildId: buildMetadata.buildId,
+                sourceTreeSha256: buildMetadata.sourceTreeSha256,
+                gitCommit: buildMetadata.gitCommit,
+                gitWorkingTreeClean: buildMetadata.gitWorkingTreeClean,
+                gitProvenance: buildMetadata.gitProvenance,
+                scientificBuildProvenanceReady: buildMetadata.gitCommit !== null && buildMetadata.gitProvenance !== 'UNAVAILABLE',
+            });
         }).catch((error) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
         return true;
     }
@@ -433,6 +442,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const nowMs = Date.now();
         superviseShadowConnections(nowMs, false);
         void runtime.then(async ({ journal, pipeline, buildMetadata }) => {
+            if (buildMetadata.gitCommit === null || buildMetadata.gitProvenance === 'UNAVAILABLE') {
+                throw new Error('Scientific dataset export blocked: Git provenance unavailable. Run npm run verify inside the Git checkout, reload the extension, and export again.');
+            }
             const createdAt = Date.now();
             await pipeline.finalizeThrough(createdAt);
             await flushTransportEvents();

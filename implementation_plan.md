@@ -2,20 +2,30 @@
 
 ## Status
 
-Release: **1.8.1**
+Release: **1.8.2**
 
 Protocol registry: **2026-09-12.1**
 
 Runtime objective: maintain signal-only OTC market observation without depending on a focused broker tab, while preserving strict scientific continuity boundaries and never executing orders.
 
 
-### v1.8.1 handoff integrity
+### v1.8.2 infrastructure freeze candidate
 
-A lossless page → shadow takeover is now classified as `PRIMARY_TRANSPORT_HANDOFF` when the connection role changes between PAGE and SHADOW, no prior connection-loss signal exists, the page session is unchanged, and the observed gap is at most 250 ms. Such a handoff keeps the feed epoch and does not mark boundary candles `GAP_AFFECTED`.
+A lossless page → shadow takeover is classified as `PRIMARY_TRANSPORT_HANDOFF` from context rather than a fixed millisecond threshold. Required evidence: PAGE → SHADOW role change, same page session, no pending connection-loss signal, same asset/feed runtime, and non-regressing source timestamps within the existing 15-second continuity window. The handoff preserves the feed epoch and does not mark boundary candles `GAP_AFFECTED`.
 
-The quantitative pipeline also deduplicates an exact market event seen by different transports when feed, instrument, source timestamp, and price are identical and the receipts fall within a 2-second window. Real short reconnects remain governed by the 15-second continuity threshold.
+The quantitative pipeline continues to deduplicate an exact market event observed by different transports when feed, instrument, source timestamp, and price are identical and receipts fall inside the 2-second semantic dedupe window. Real reconnects remain `SHORT_RECONNECT_GAP` and preserve continuity only while under 15 seconds.
 
-Build provenance is validated after compilation. In a Git checkout, `dist/build-metadata.json` must identify the current `HEAD`; archive/sandbox builds without `.git` may explicitly remain `UNAVAILABLE`.
+Directional reference evaluation is now reported in two timing-quality tiers without rewriting historical outcomes:
+
+```text
+STRICT  expiryTimingErrorMs <= 1000 ms
+RELAXED expiryTimingErrorMs <= 5000 ms
+```
+
+Both tiers have separate sample size, accuracy, Wilson interval, timeframe slices, and contributing-strategy slices. The existing 5000 ms result-resolution ceiling remains unchanged.
+
+Scientific dataset export is fail-closed for build provenance: the loaded artifact must identify a Git commit (`GIT` or explicit environment provenance). A prebuilt artifact with `gitProvenance = UNAVAILABLE` may run for diagnostics but cannot export a scientific dataset. `npm run verify` inside the repository is therefore required before scientific collection.
+
 
 ## 1. Production transport
 
@@ -165,7 +175,7 @@ Economic return therefore remains unavailable. Directional reference evaluation 
 
 ## 7. Persistence and recovery
 
-IndexedDB v9 stores append-only:
+IndexedDB v11 stores append-only:
 
 ```text
 ticks

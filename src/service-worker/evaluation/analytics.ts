@@ -39,8 +39,22 @@ export interface AnalyticsSnapshot {
   directionalAccuracy: number | null;
   directionalWilsonLow: number | null;
   directionalWilsonHigh: number | null;
+  strictSettlementMaxTimingErrorMs: number;
+  relaxedSettlementMaxTimingErrorMs: number;
+  strictResolvedDirectionalSampleSize: number;
+  strictDirectionalCorrectCount: number;
+  strictDirectionalAccuracy: number | null;
+  strictDirectionalWilsonLow: number | null;
+  strictDirectionalWilsonHigh: number | null;
+  relaxedResolvedDirectionalSampleSize: number;
+  relaxedDirectionalCorrectCount: number;
+  relaxedDirectionalAccuracy: number | null;
+  relaxedDirectionalWilsonLow: number | null;
+  relaxedDirectionalWilsonHigh: number | null;
   strategyPerformance: PerformanceSlice[];
   timeframePerformance: PerformanceSlice[];
+  strictStrategyPerformance: PerformanceSlice[];
+  strictTimeframePerformance: PerformanceSlice[];
   economicSampleSize: number;
   economicIneligibleResolvedCount: number;
   economicCoverageRate: number | null;
@@ -97,12 +111,13 @@ function wilson(successes: number, total: number, z = 1.96): [number, number] | 
   return [Math.max(0, center - margin), Math.min(1, center + margin)];
 }
 
-function performanceSlices(snapshot: JournalSnapshot, mode: 'STRATEGY' | 'TIMEFRAME'): PerformanceSlice[] {
+function performanceSlices(snapshot: JournalSnapshot, mode: 'STRATEGY' | 'TIMEFRAME', maxTimingErrorMs: number | null = null): PerformanceSlice[] {
   const decisionById = new Map(snapshot.decisions.map((decision) => [decision.decisionId, decision]));
   const signalById = new Map(snapshot.signals.map((signal) => [signal.signalId, signal]));
   const stats = new Map<string, { resolved: number; correct: number }>();
   for (const result of snapshot.results) {
     if (result.resolutionStatus !== 'RESOLVED' || result.directionalOutcome === 'FLAT') continue;
+    if (maxTimingErrorMs !== null && result.expiryTimingErrorMs > maxTimingErrorMs) continue;
     const signal = signalById.get(result.signalId);
     if (!signal) continue;
     const decision = decisionById.get(signal.decisionId);
@@ -128,6 +143,8 @@ export function computeAnalytics(
   assetFeedHealth: AssetFeedHealthSnapshot[],
   captureTransport: CaptureTransportSnapshot,
   activeEpisodeCount: number,
+  strictSettlementMaxTimingErrorMs: number,
+  relaxedSettlementMaxTimingErrorMs: number,
 ): AnalyticsSnapshot {
   const callPutDecisions = snapshot.decisions.filter((decision) => decision.finalDecision === 'CALL' || decision.finalDecision === 'PUT');
   const callPutDecisionCount = callPutDecisions.length;
@@ -146,8 +163,12 @@ export function computeAnalytics(
   const resolved = snapshot.results.filter((result) => result.resolutionStatus === 'RESOLVED');
   const unresolvedResultCount = snapshot.results.length - resolved.length;
   const directional = resolved.filter((result) => result.directionalOutcome !== 'FLAT');
-  const correct = directional.filter((result) => result.directionalOutcome === 'CORRECT').length;
-  const interval = wilson(correct, directional.length);
+  const strictDirectional = directional.filter((result) => result.expiryTimingErrorMs <= strictSettlementMaxTimingErrorMs);
+  const relaxedDirectional = directional.filter((result) => result.expiryTimingErrorMs <= relaxedSettlementMaxTimingErrorMs);
+  const strictCorrect = strictDirectional.filter((result) => result.directionalOutcome === 'CORRECT').length;
+  const relaxedCorrect = relaxedDirectional.filter((result) => result.directionalOutcome === 'CORRECT').length;
+  const strictInterval = wilson(strictCorrect, strictDirectional.length);
+  const relaxedInterval = wilson(relaxedCorrect, relaxedDirectional.length);
   const economic = resolved.flatMap((result) => result.economicReturn === null ? [] : [result.economicReturn]);
   const verifiedSettlementCount = resolved.filter((result) => result.settlementMetadata.confidence === 'VERIFIED').length;
   const inferredSettlementCount = resolved.filter((result) => result.settlementMetadata.confidence === 'INFERRED').length;
@@ -190,14 +211,28 @@ export function computeAnalytics(
     pendingSignalCount,
     resolvedResultCount: resolved.length,
     unresolvedResultCount,
-    resolvedDirectionalSampleSize: directional.length,
-    independentEpisodeResolvedSampleSize: directional.length,
-    directionalCorrectCount: correct,
-    directionalAccuracy: directional.length === 0 ? null : correct / directional.length,
-    directionalWilsonLow: interval?.[0] ?? null,
-    directionalWilsonHigh: interval?.[1] ?? null,
-    strategyPerformance: performanceSlices(snapshot, 'STRATEGY'),
-    timeframePerformance: performanceSlices(snapshot, 'TIMEFRAME'),
+    resolvedDirectionalSampleSize: relaxedDirectional.length,
+    independentEpisodeResolvedSampleSize: relaxedDirectional.length,
+    directionalCorrectCount: relaxedCorrect,
+    directionalAccuracy: relaxedDirectional.length === 0 ? null : relaxedCorrect / relaxedDirectional.length,
+    directionalWilsonLow: relaxedInterval?.[0] ?? null,
+    directionalWilsonHigh: relaxedInterval?.[1] ?? null,
+    strictSettlementMaxTimingErrorMs,
+    relaxedSettlementMaxTimingErrorMs,
+    strictResolvedDirectionalSampleSize: strictDirectional.length,
+    strictDirectionalCorrectCount: strictCorrect,
+    strictDirectionalAccuracy: strictDirectional.length === 0 ? null : strictCorrect / strictDirectional.length,
+    strictDirectionalWilsonLow: strictInterval?.[0] ?? null,
+    strictDirectionalWilsonHigh: strictInterval?.[1] ?? null,
+    relaxedResolvedDirectionalSampleSize: relaxedDirectional.length,
+    relaxedDirectionalCorrectCount: relaxedCorrect,
+    relaxedDirectionalAccuracy: relaxedDirectional.length === 0 ? null : relaxedCorrect / relaxedDirectional.length,
+    relaxedDirectionalWilsonLow: relaxedInterval?.[0] ?? null,
+    relaxedDirectionalWilsonHigh: relaxedInterval?.[1] ?? null,
+    strategyPerformance: performanceSlices(snapshot, 'STRATEGY', relaxedSettlementMaxTimingErrorMs),
+    timeframePerformance: performanceSlices(snapshot, 'TIMEFRAME', relaxedSettlementMaxTimingErrorMs),
+    strictStrategyPerformance: performanceSlices(snapshot, 'STRATEGY', strictSettlementMaxTimingErrorMs),
+    strictTimeframePerformance: performanceSlices(snapshot, 'TIMEFRAME', strictSettlementMaxTimingErrorMs),
     economicSampleSize: economic.length,
     economicIneligibleResolvedCount: resolved.length - economic.length,
     economicCoverageRate: resolved.length === 0 ? null : economic.length / resolved.length,
