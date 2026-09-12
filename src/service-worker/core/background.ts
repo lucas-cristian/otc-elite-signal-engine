@@ -1,13 +1,12 @@
 import { canonicalEntityHash } from '../../common/hashing/canonical-hash.js';
-import type { CaptureTransportSnapshot, SourceTabVisibility, TransportEventRecord, TransportEventType } from '../../common/models/runtime-telemetry.js';
-import type { DiscoveryObservation, RecoveryContextEvent, SemanticMarketEvent } from '../../common/protocol/market-events.js';
+import type { CaptureTransportSnapshot, ShadowFeedState, SourceTabVisibility, TransportEventRecord, TransportEventType } from '../../common/models/runtime-telemetry.js';
+import type { DiscoveryObservation } from '../../common/protocol/market-events.js';
 import { isSemanticPayoutEvent, isSemanticPriceEvent } from '../../common/validation/semantic-event-validator.js';
 import { createValidatedTick } from '../../common/validation/tick-factory.js';
 import { computeAnalytics } from '../evaluation/analytics.js';
 import { DatasetExporter } from '../export/dataset-exporter.js';
 import { IndexedDbJournal, openJournalDatabase } from '../storage/indexeddb-journal.js';
 import { DEFAULT_PIPELINE_CONFIG, QuantPipeline } from './quant-pipeline.js';
-import { ShadowMarketConnection, type ShadowRecoveryContext, type ShadowTransportEvent } from './shadow-market-connection.js';
 
 interface BuildMetadata {
   appVersion: string;
@@ -28,6 +27,7 @@ const WATCHDOG_PERIOD_MINUTES = 0.5;
 const SEMANTIC_PORT_NAME = 'OTC_ELITE_SEMANTIC_STREAM_V1';
 const discoveryRing: DiscoveryObservation[] = [];
 const captureByTab = new Map<number, CaptureTransportSnapshot>();
+const capturePortByTab = new Map<number, chrome.runtime.Port>();
 let latestCaptureTabId: number | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -36,7 +36,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function defaultCapture(tabId: number | null): CaptureTransportSnapshot {
   return {
-    transportSchemaVersion: '2',
+    transportSchemaVersion: '3',
     tabId,
     pageSessionId: null,
     connected: false,
@@ -49,13 +49,17 @@ function defaultCapture(tabId: number | null): CaptureTransportSnapshot {
     lastConnectionEventAt: null,
     lastLifecycleReason: null,
     shadowConnected: false,
+    shadowPrimary: false,
     shadowState: 'WAITING_CONTEXT',
     shadowEndpointHost: null,
     shadowReconnectAttempts: 0,
+    shadowConsecutiveNamespaceRejects: 0,
+    shadowCircuitOpen: false,
     shadowLastMessageAt: null,
     shadowLastPriceAt: null,
     shadowLastErrorReason: null,
-    mitigation: 'RUNTIME_PORT_MICROTASK_FLUSH_AUTO_DISCARD_DISABLED_SHADOW_WS',
+    shadowLastCommandAt: null,
+    mitigation: 'MAIN_WORLD_NATIVE_SHADOW_RUNTIME_PORT_WATCHDOG_AUTO_DISCARD_DISABLED',
   };
 }
 
@@ -71,14 +75,6 @@ function visibility(value: unknown): SourceTabVisibility {
   return value === 'visible' || value === 'hidden' || value === 'prerender' ? value : 'unknown';
 }
 
-function endpointHost(endpointUrl: string | null): string | null {
-  if (endpointUrl === null) return null;
-  try {
-    return new URL(endpointUrl).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-}
 
 async function loadBuildMetadata(): Promise<BuildMetadata> {
   const fallbackVersion = chrome.runtime.getManifest().version;
@@ -115,20 +111,7 @@ function latestCaptureBase(): CaptureTransportSnapshot {
   return latest ?? defaultCapture(null);
 }
 
-function latestCapture(): CaptureTransportSnapshot {
-  const base = latestCaptureBase();
-  const shadow = shadowConnection.snapshot();
-  return {
-    ...base,
-    shadowConnected: shadow.connected,
-    shadowState: shadow.state,
-    shadowEndpointHost: shadow.endpointHost,
-    shadowReconnectAttempts: shadow.reconnectAttempts,
-    shadowLastMessageAt: shadow.lastMessageAt,
-    shadowLastPriceAt: shadow.lastPriceAt,
-    shadowLastErrorReason: shadow.lastErrorReason,
-  };
-}
+function latestCapture(): CaptureTransportSnapshot { return { ...latestCaptureBase() }; }
 
 let transportWriteQueue: Promise<void> = Promise.resolve();
 
@@ -152,53 +135,19 @@ async function appendTransportEvent(input: {
   reason: string | null;
 }): Promise<void> {
   const event: TransportEventRecord = {
-    transportEventSchemaVersion: '1',
-    transportEventId: canonicalEntityHash('TRANSPORT_EVENT', 1, input),
+    transportEventSchemaVersion: '2',
+    transportEventId: canonicalEntityHash('TRANSPORT_EVENT', 2, input),
     ...input,
   };
   const { journal } = await runtime;
   await journal.appendTransportEvent(event);
 }
 
-async function processShadowSemanticEvent(event: SemanticMarketEvent, pageSessionId: string): Promise<void> {
-  const { pipeline } = await runtime;
-  if (event.type === 'SEMANTIC_PRICE') {
-    const tick = createValidatedTick(event, pageSessionId);
-    if (tick.integrity === 'VALID') await pipeline.enqueue({ tick });
-  } else {
-    await pipeline.enqueuePayout(event.payoutSnapshot);
-  }
-  await pipeline.drain();
-  if (latestCaptureTabId !== null) captureState(latestCaptureTabId).lastSemanticEventAt = Date.now();
-}
-
-function processShadowTransportEvent(event: ShadowTransportEvent): void {
-  const base = latestCaptureBase();
-  queueTransportEvent({
-    eventType: event.type,
-    occurredAt: event.occurredAt,
-    tabId: base.tabId,
-    pageSessionId: event.pageSessionId,
-    connectionId: event.connectionId,
-    endpointHost: event.endpointHost,
-    visibility: base.visibility,
-    shadow: true,
-    reason: event.reason,
-  });
-  if ((event.type === 'SHADOW_WS_CLOSE' || event.type === 'SHADOW_WS_ERROR' || event.type === 'SHADOW_STALL_DETECTED') && event.connectionId) {
-    void runtime.then(({ pipeline }) => pipeline.connectionLost(event.connectionId ?? '', event.occurredAt, event.type)).catch(() => undefined);
-  }
-}
-
-const shadowConnection = new ShadowMarketConnection({
-  onSemanticEvent: processShadowSemanticEvent,
-  onTransportEvent: processShadowTransportEvent,
-});
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== WATCHDOG_ALARM_NAME) return;
   const nowMs = Date.now();
-  shadowConnection.watchdog(nowMs);
+  superviseShadowConnections(nowMs, true);
   void runtime.then(({ pipeline }) => pipeline.watchdog(nowMs)).catch(() => undefined);
 });
 
@@ -210,25 +159,6 @@ function isDiscoveryObservation(value: unknown): value is DiscoveryObservation {
     && (value.direction === 'INBOUND' || value.direction === 'OUTBOUND');
 }
 
-function isRecoveryContext(value: unknown): value is ShadowRecoveryContext {
-  if (!isRecord(value)) return false;
-  return typeof value.pageSessionId === 'string'
-    && typeof value.connectionId === 'string'
-    && typeof value.endpointUrl === 'string'
-    && typeof value.capturedAt === 'number'
-    && (value.kind === 'MARKET_ENDPOINT' || value.kind === 'AUTH_PACKET' || value.kind === 'SUBSCRIPTION_PACKET')
-    && (value.socketIoEventName === null || typeof value.socketIoEventName === 'string')
-    && (value.packet === null || typeof value.packet === 'string');
-}
-
-function parseRecoverySnapshot(value: unknown): { pageSessionId: string; endpoint: ShadowRecoveryContext | null; auth: ShadowRecoveryContext | null; subscriptions: ShadowRecoveryContext[] } | null {
-  if (!isRecord(value) || typeof value.pageSessionId !== 'string') return null;
-  const endpoint = value.endpoint === null ? null : isRecoveryContext(value.endpoint) ? value.endpoint : null;
-  const auth = value.auth === null ? null : isRecoveryContext(value.auth) ? value.auth : null;
-  const subscriptions = Array.isArray(value.subscriptions) ? value.subscriptions.filter(isRecoveryContext) : [];
-  if (!endpoint) return null;
-  return { pageSessionId: value.pageSessionId, endpoint, auth, subscriptions };
-}
 
 async function processSemanticBatch(payload: unknown, tabId: number | null): Promise<void> {
   if (!Array.isArray(payload)) return;
@@ -244,15 +174,12 @@ async function processSemanticBatch(payload: unknown, tabId: number | null): Pro
     if (!isRecord(item) || typeof item.pageSessionId !== 'string') continue;
     if (tabId !== null) captureState(tabId).pageSessionId = item.pageSessionId;
     if (isSemanticPriceEvent(item.event)) {
-      if (shadowConnection.shouldOwnFeed(item.event.identity.feedId, now)) continue;
       const tick = createValidatedTick(item.event, item.pageSessionId);
       if (tick.integrity !== 'VALID') continue;
       await pipeline.enqueue({ tick });
       continue;
     }
     if (isSemanticPayoutEvent(item.event)) {
-      const feedId = item.event.payoutSnapshot.feedId;
-      if (feedId !== null && shadowConnection.shouldOwnFeed(feedId, now)) continue;
       await pipeline.enqueuePayout(item.event.payoutSnapshot);
     }
   }
@@ -279,6 +206,7 @@ function processLifecycle(payload: unknown, tabId: number | null): void {
     shadow: false,
     reason: state.lastLifecycleReason,
   });
+  if (state.visibility === 'hidden' && !state.shadowCircuitOpen) sendShadowControl(tabId, 'ENSURE_CONNECTED', state.lastLifecycleEventAt);
 }
 
 function processConnectionEvent(payload: unknown, tabId: number | null): void {
@@ -307,13 +235,72 @@ function processConnectionEvent(payload: unknown, tabId: number | null): void {
     shadow: false,
     reason: null,
   });
-  if (event !== 'OPEN') void runtime.then(({ pipeline }) => pipeline.connectionLost(connectionId, capturedAt, eventType)).catch(() => undefined);
+  if (event !== 'OPEN') {
+    void runtime.then(({ pipeline }) => pipeline.connectionLost(connectionId, capturedAt, eventType)).catch(() => undefined);
+    if (!state.shadowCircuitOpen) sendShadowControl(tabId, 'FORCE_RECONNECT', capturedAt);
+  }
+}
+
+
+function isShadowFeedState(value: unknown): value is ShadowFeedState {
+  return value === 'WAITING_CONTEXT' || value === 'ENGINE_CONNECTING' || value === 'ENGINE_OPEN' || value === 'NAMESPACE_CONNECTING' || value === 'NAMESPACE_OPEN' || value === 'AUTH_SENT' || value === 'AUTHENTICATED' || value === 'SUBSCRIPTIONS_REPLAYED' || value === 'STREAMING' || value === 'BACKOFF' || value === 'CIRCUIT_OPEN' || value === 'ERROR';
+}
+
+function processShadowTransport(payload: unknown, tabId: number | null): void {
+  if (tabId === null || !isRecord(payload) || payload.type !== 'SHADOW_TRANSPORT') return;
+  if (typeof payload.eventType !== 'string' || typeof payload.occurredAt !== 'number' || !isShadowFeedState(payload.state)) return;
+  const state = captureState(tabId);
+  state.pageSessionId = typeof payload.pageSessionId === 'string' ? payload.pageSessionId : state.pageSessionId;
+  state.shadowConnected = payload.connected === true;
+  state.shadowPrimary = payload.primary === true;
+  state.shadowState = payload.state;
+  state.shadowEndpointHost = typeof payload.endpointHost === 'string' ? payload.endpointHost : null;
+  state.shadowReconnectAttempts = typeof payload.reconnectAttempts === 'number' ? payload.reconnectAttempts : state.shadowReconnectAttempts;
+  state.shadowConsecutiveNamespaceRejects = typeof payload.consecutiveNamespaceRejects === 'number' ? payload.consecutiveNamespaceRejects : state.shadowConsecutiveNamespaceRejects;
+  state.shadowCircuitOpen = payload.circuitOpen === true;
+  state.shadowLastMessageAt = typeof payload.lastMessageAt === 'number' ? payload.lastMessageAt : state.shadowLastMessageAt;
+  state.shadowLastPriceAt = typeof payload.lastPriceAt === 'number' ? payload.lastPriceAt : state.shadowLastPriceAt;
+  state.shadowLastErrorReason = typeof payload.lastErrorReason === 'string' ? payload.lastErrorReason : null;
+  const eventType = payload.eventType as TransportEventType;
+  queueTransportEvent({
+    eventType,
+    occurredAt: payload.occurredAt,
+    tabId,
+    pageSessionId: state.pageSessionId,
+    connectionId: typeof payload.connectionId === 'string' ? payload.connectionId : null,
+    endpointHost: state.shadowEndpointHost,
+    visibility: state.visibility,
+    shadow: true,
+    reason: typeof payload.reason === 'string' ? payload.reason : null,
+  });
+}
+
+function sendShadowControl(tabId: number, command: 'ENSURE_CONNECTED' | 'FORCE_RECONNECT' | 'RESET_CIRCUIT', nowMs: number): void {
+  const port = capturePortByTab.get(tabId);
+  if (!port) return;
+  const state = captureState(tabId);
+  if (state.shadowLastCommandAt !== null && nowMs - state.shadowLastCommandAt < 10_000 && command !== 'RESET_CIRCUIT') return;
+  try {
+    port.postMessage({ type: 'SHADOW_CONTROL', command, sentAt: nowMs });
+    state.shadowLastCommandAt = nowMs;
+  } catch { return; }
+}
+
+function superviseShadowConnections(nowMs: number, alarmDriven: boolean): void {
+  for (const [tabId, state] of captureByTab) {
+    if (!state.connected || state.discarded === true || state.frozen === true) continue;
+    const semanticAge = state.lastSemanticEventAt === null ? Number.POSITIVE_INFINITY : nowMs - state.lastSemanticEventAt;
+    if (state.shadowCircuitOpen) continue;
+    if (semanticAge > 15_000) sendShadowControl(tabId, 'FORCE_RECONNECT', nowMs);
+    else if (alarmDriven || !state.shadowConnected) sendShadowControl(tabId, 'ENSURE_CONNECTED', nowMs);
+  }
 }
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== SEMANTIC_PORT_NAME) return;
   const tabId = port.sender?.tab?.id ?? null;
   if (tabId !== null) {
+    capturePortByTab.set(tabId, port);
     const state = captureState(tabId);
     state.connected = true;
     latestCaptureTabId = tabId;
@@ -342,15 +329,7 @@ chrome.runtime.onConnect.addListener((port) => {
       void processSemanticBatch(message.payload, tabId).catch(() => undefined);
       return;
     }
-    if (message.type === 'SHADOW_RECOVERY_CONTEXT' && isRecoveryContext(message.payload)) {
-      shadowConnection.updateContext(message.payload);
-      return;
-    }
-    if (message.type === 'SHADOW_RECOVERY_SNAPSHOT') {
-      const snapshot = parseRecoverySnapshot(message.payload);
-      if (snapshot) shadowConnection.replaceSnapshot(snapshot);
-      return;
-    }
+    if (message.type === 'SHADOW_TRANSPORT_EVENT') { processShadowTransport(message.payload, tabId); return; }
     if (message.type === 'PROTOCOL_DISCOVERY_OBSERVATION') {
       if (isDiscoveryObservation(message.payload)) {
         discoveryRing.push(message.payload);
@@ -367,6 +346,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onDisconnect.addListener(() => {
     if (tabId === null) return;
+    if (capturePortByTab.get(tabId) === port) capturePortByTab.delete(tabId);
     const state = captureState(tabId);
     state.connected = false;
     queueTransportEvent({
@@ -394,6 +374,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   captureByTab.delete(tabId);
+  capturePortByTab.delete(tabId);
   if (latestCaptureTabId === tabId) latestCaptureTabId = null;
 });
 
@@ -423,7 +404,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
   if (message.type === 'GET_ANALYTICS') {
     const nowMs = Date.now();
-    shadowConnection.watchdog(nowMs);
+    superviseShadowConnections(nowMs, false);
     void runtime.then(async ({ journal, pipeline }) => {
       await pipeline.watchdog(nowMs);
       await flushTransportEvents();
@@ -435,7 +416,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
   if (message.type === 'EXPORT_DATASET_JSON') {
     const nowMs = Date.now();
-    shadowConnection.watchdog(nowMs);
+    superviseShadowConnections(nowMs, false);
     void runtime.then(async ({ journal, pipeline, buildMetadata }) => {
       const createdAt = Date.now();
       await pipeline.finalizeThrough(createdAt);

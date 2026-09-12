@@ -14,7 +14,7 @@ export interface DatasetAssetFeedHealth {
 }
 
 export interface DatasetManifest {
-  datasetSchemaVersion: '5';
+  datasetSchemaVersion: '6';
   datasetId: string;
   createdAt: number;
   appVersion: string;

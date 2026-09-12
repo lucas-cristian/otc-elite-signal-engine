@@ -1,10 +1,10 @@
-# OTC Elite Signal Engine v1.6.0 — Validation Report
+# OTC Elite Signal Engine v1.7.0 — Validation Report
 
 Date: 2026-09-12
 
 ## Scope
 
-Release 1.6.0 addresses the hidden-tab market-feed interruption observed in the v1.5 dataset and closes the scientific continuity flaw that allowed pre-gap history to influence post-reconnection decisions.
+Release 1.7.0 addresses the hidden-tab market-feed interruption observed in the v1.5 dataset and closes the scientific continuity flaw that allowed pre-gap history to influence post-reconnection decisions.
 
 The extension remains signal-only. It contains no order execution, auto-click or `openOrder` sender.
 
@@ -147,7 +147,7 @@ raw WebSocket capture or user dataset bundled in project: 0
 The sandbox build generated:
 
 ```text
-appVersion: 1.6.0
+appVersion: 1.7.0
 buildId: source-f24c6369e5b5878e
 sourceTreeSha256: f24c6369e5b5878e93913d25cf688de8647f6f71e0de4f84033499586039289d
 ```

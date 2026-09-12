@@ -2,7 +2,7 @@
 
 ## Status
 
-Release: **1.6.0**
+Release: **1.7.0**
 
 Protocol registry: **2026-09-12.1**
 
@@ -43,7 +43,7 @@ subscribeSymbol for *_otc
 ps
 ```
 
-Trade/order events are outside the whitelist and cannot be sent by `ShadowMarketConnection`.
+Trade/order events are outside the whitelist and cannot be sent by the MAIN-world shadow market connection.
 
 Auth/session context is memory-only and excluded from storage, journal, logs and dataset export.
 
@@ -221,7 +221,7 @@ auth/session persistence in journal/export = 0
 
 ## 11. Remaining empirical gate
 
-The sandbox can validate code, replay captured data and verify protocol state machines, but it cannot authenticate a live Pocket Option browser session. Therefore live DEMO validation of the extension-owned shadow WebSocket is still required.
+The sandbox can validate code, replay captured data and verify protocol state machines, but it cannot authenticate a live Pocket Option browser session. Therefore live DEMO validation of the MAIN-world native shadow WebSocket is still required.
 
 The empirical acceptance condition is:
 

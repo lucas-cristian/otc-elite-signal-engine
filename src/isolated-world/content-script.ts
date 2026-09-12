@@ -1,178 +1,81 @@
-const OTC_BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
-const OTC_CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
+const OTC_BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V3';
+const OTC_CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V3';
 const OTC_PORT_NAME = 'OTC_ELITE_SEMANTIC_STREAM_V1';
 const otcPageOrigin = window.location.origin;
 const otcPageOriginUsable = otcPageOrigin !== 'null' && otcPageOrigin.startsWith('https://');
 const otcPageSessionId = crypto.randomUUID();
 const otcConnections = new Map<string, { nextSequence: number; pending: Map<number, Record<string, unknown>> }>();
 const otcOutbox: Array<{ pageSessionId: string; event: Record<string, unknown> }> = [];
-const otcRecovery = {
-  endpoint: null as Record<string, unknown> | null,
-  auth: null as Record<string, unknown> | null,
-  subscriptions: new Map<string, Record<string, unknown>>(),
-};
 let otcPort: chrome.runtime.Port | null = null;
 let otcFlushQueued = false;
 let otcPortReconnectQueued = false;
 
-function otcIsRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
+function otcIsRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
+function otcHasSemanticEnvelope(value: Record<string, unknown>): boolean { return typeof value.connectionId === 'string' && Number.isInteger(value.sequence) && (value.sequence as number) >= 0; }
 function otcIsConnectionEvent(value: unknown): value is Record<string, unknown> {
-  if (!otcIsRecord(value) || value.type !== 'CONNECTION' || typeof value.connectionId !== 'string') return false;
-  if (value.feedHost !== null && typeof value.feedHost !== 'string') return false;
-  return value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR';
+  return otcIsRecord(value) && value.type === 'CONNECTION' && typeof value.connectionId === 'string' && (value.feedHost === null || typeof value.feedHost === 'string') && (value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR');
 }
-
-function otcIsRecoveryContext(value: unknown): value is Record<string, unknown> {
-  if (!otcIsRecord(value) || value.type !== 'RECOVERY_CONTEXT' || typeof value.connectionId !== 'string') return false;
-  if (typeof value.endpointUrl !== 'string' || typeof value.capturedAt !== 'number') return false;
-  if (value.kind !== 'MARKET_ENDPOINT' && value.kind !== 'AUTH_PACKET' && value.kind !== 'SUBSCRIPTION_PACKET') return false;
-  if (value.packet !== null && typeof value.packet !== 'string') return false;
-  if (value.socketIoEventName !== null && typeof value.socketIoEventName !== 'string') return false;
-  return true;
-}
-
-function otcIsDiscoveryObservation(value: unknown): value is Record<string, unknown> {
-  return otcIsRecord(value)
-    && value.type === 'DISCOVERY_OBSERVATION'
-    && typeof value.connectionId === 'string'
-    && typeof value.byteLength === 'number';
-}
-
-function otcHasSemanticEnvelope(value: Record<string, unknown>): boolean {
-  return typeof value.connectionId === 'string'
-    && Number.isInteger(value.sequence)
-    && (value.sequence as number) >= 0;
-}
-
 function otcIsSemanticPriceEvent(value: unknown): value is Record<string, unknown> {
   if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PRICE' || !otcHasSemanticEnvelope(value)) return false;
   if (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price <= 0) return false;
-  if (typeof value.receivedAtEpochMs !== 'number' || typeof value.receivedAtMonotonicMs !== 'number') return false;
-  if (typeof value.sourceClockSynchronized !== 'boolean') return false;
-  if (value.sourceQuality !== 'VERIFIED' && value.sourceQuality !== 'INFERRED' && value.sourceQuality !== 'UNKNOWN') return false;
-  if (value.sourceQuality === 'VERIFIED' && (typeof value.protocolVerificationId !== 'string' || value.protocolVerificationId.length === 0)) return false;
-  if (value.sourceQuality !== 'VERIFIED' && value.protocolVerificationId !== null) return false;
+  if (typeof value.receivedAtEpochMs !== 'number' || typeof value.receivedAtMonotonicMs !== 'number' || typeof value.sourceClockSynchronized !== 'boolean') return false;
   if (!otcIsRecord(value.identity)) return false;
-  return value.identity.platform === 'POCKET_OPTION'
-    && value.identity.marketType === 'OTC'
-    && value.identity.source === 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON'
-    && typeof value.identity.canonicalAssetId === 'string'
-    && typeof value.identity.instrumentId === 'string'
-    && typeof value.identity.feedId === 'string'
-    && typeof value.identity.parserSchemaId === 'string';
+  return value.identity.platform === 'POCKET_OPTION' && value.identity.marketType === 'OTC' && typeof value.identity.feedId === 'string';
 }
-
 function otcIsSemanticPayoutEvent(value: unknown): value is Record<string, unknown> {
-  if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PAYOUT' || !otcHasSemanticEnvelope(value)) return false;
-  if (!otcIsRecord(value.payoutSnapshot)) return false;
-  const payout = value.payoutSnapshot;
-  return payout.payoutSnapshotSchemaVersion === '3'
-    && typeof payout.canonicalAssetId === 'string'
-    && payout.expirationBinding === 'UNBOUND'
-    && typeof payout.payoutRate === 'number'
-    && Number.isFinite(payout.payoutRate)
-    && payout.payoutRate >= 0
-    && payout.payoutRate <= 1
-    && typeof payout.capturedAt === 'number'
-    && typeof payout.feedId === 'string'
-    && typeof payout.parserSchemaId === 'string'
-    && ((payout.quality === 'VERIFIED' && typeof payout.protocolVerificationId === 'string' && payout.protocolVerificationId.length > 0)
-      || (payout.quality !== 'VERIFIED' && payout.protocolVerificationId === null));
+  return otcIsRecord(value) && value.type === 'SEMANTIC_PAYOUT' && otcHasSemanticEnvelope(value) && otcIsRecord(value.payoutSnapshot) && value.payoutSnapshot.payoutSnapshotSchemaVersion === '3';
 }
-
-function otcRecoverySubscriptionKey(event: Record<string, unknown>): string | null {
-  const eventName = event.socketIoEventName;
-  if (typeof eventName !== 'string') return null;
-  if (eventName !== 'subscribeSymbol') return eventName;
-  const packet = event.packet;
-  if (typeof packet !== 'string' || !packet.startsWith('42[')) return eventName;
-  try {
-    const parsed: unknown = JSON.parse(packet.slice(2));
-    if (!Array.isArray(parsed) || typeof parsed[1] !== 'string') return eventName;
-    return `${eventName}:${parsed[1]}`;
-  } catch {
-    return eventName;
-  }
+function otcIsDiscoveryObservation(value: unknown): value is Record<string, unknown> { return otcIsRecord(value) && value.type === 'DISCOVERY_OBSERVATION' && typeof value.connectionId === 'string' && typeof value.byteLength === 'number'; }
+function otcIsShadowTransport(value: unknown): value is Record<string, unknown> {
+  return otcIsRecord(value)
+    && value.type === 'SHADOW_TRANSPORT'
+    && typeof value.eventType === 'string'
+    && typeof value.occurredAt === 'number'
+    && typeof value.state === 'string'
+    && typeof value.connected === 'boolean'
+    && typeof value.primary === 'boolean'
+    && typeof value.reconnectAttempts === 'number'
+    && typeof value.consecutiveNamespaceRejects === 'number'
+    && typeof value.circuitOpen === 'boolean';
 }
-
-function otcRecoverySnapshot(): Record<string, unknown> | null {
-  if (!otcRecovery.endpoint) return null;
-  return {
-    pageSessionId: otcPageSessionId,
-    endpoint: otcRecovery.endpoint,
-    auth: otcRecovery.auth,
-    subscriptions: [...otcRecovery.subscriptions.values()],
-  };
-}
-
-function otcReplayRecoveryContext(port: chrome.runtime.Port): void {
-  const snapshot = otcRecoverySnapshot();
-  if (!snapshot) return;
-  try {
-    port.postMessage({ type: 'SHADOW_RECOVERY_SNAPSHOT', payload: snapshot });
-  } catch {
-    // The port disconnect handler will retry by establishing a fresh runtime.Port.
-  }
-}
-
 function otcQueuePortReconnect(): void {
   if (otcPortReconnectQueued) return;
   otcPortReconnectQueued = true;
   queueMicrotask(() => {
     otcPortReconnectQueued = false;
-    try {
-      otcConnectPort();
-    } catch {
-      // A future semantic/lifecycle event will retry without relying on a page timer.
-    }
+    try { otcConnectPort(); } catch { return; }
   });
 }
-
 function otcConnectPort(): chrome.runtime.Port {
   if (otcPort) return otcPort;
   const port = chrome.runtime.connect({ name: OTC_PORT_NAME });
   otcPort = port;
+  port.onMessage.addListener((message) => {
+    if (!otcIsRecord(message) || message.type !== 'SHADOW_CONTROL') return;
+    const command = message.command;
+    if (command !== 'ENSURE_CONNECTED' && command !== 'FORCE_RECONNECT' && command !== 'RESET_CIRCUIT') return;
+    if (otcPageOriginUsable) window.postMessage({ source: OTC_CONTROL_SOURCE, command }, otcPageOrigin);
+  });
   port.onDisconnect.addListener(() => {
     if (otcPort === port) otcPort = null;
     otcQueuePortReconnect();
     if (otcOutbox.length > 0) otcQueueFlush();
   });
-  otcReplayRecoveryContext(port);
   otcSendLifecycle('PORT_CONNECTED');
   return port;
 }
-
 function otcPostPort(message: unknown): boolean {
-  try {
-    otcConnectPort().postMessage(message);
-    return true;
-  } catch {
-    otcPort = null;
-    otcQueuePortReconnect();
-    return false;
-  }
+  try { otcConnectPort().postMessage(message); return true; }
+  catch { otcPort = null; otcQueuePortReconnect(); return false; }
 }
-
-function otcQueueFlush(): void {
-  if (otcFlushQueued) return;
-  otcFlushQueued = true;
-  queueMicrotask(otcFlush);
-}
-
+function otcQueueFlush(): void { if (!otcFlushQueued) { otcFlushQueued = true; queueMicrotask(otcFlush); } }
 function otcFlush(): void {
   otcFlushQueued = false;
   if (otcOutbox.length === 0) return;
   const payload = otcOutbox.splice(0, Math.min(otcOutbox.length, 100));
-  if (!otcPostPort({ type: 'SEMANTIC_EVENT_BATCH', payload, sentAt: Date.now() })) {
-    otcOutbox.unshift(...payload);
-    return;
-  }
+  if (!otcPostPort({ type: 'SEMANTIC_EVENT_BATCH', payload, sentAt: Date.now() })) { otcOutbox.unshift(...payload); return; }
   if (otcOutbox.length > 0) otcQueueFlush();
 }
-
 function otcPushSemantic(event: Record<string, unknown>): void {
   const connectionId = event.connectionId as string;
   const sequence = event.sequence as number;
@@ -188,32 +91,9 @@ function otcPushSemantic(event: Record<string, unknown>): void {
   }
   otcQueueFlush();
 }
-
-function otcRememberRecoveryContext(event: Record<string, unknown>): void {
-  const enriched = { ...event, pageSessionId: otcPageSessionId };
-  if (event.kind === 'MARKET_ENDPOINT') otcRecovery.endpoint = enriched;
-  if (event.kind === 'AUTH_PACKET') otcRecovery.auth = enriched;
-  if (event.kind === 'SUBSCRIPTION_PACKET') {
-    const key = otcRecoverySubscriptionKey(event);
-    if (key !== null) otcRecovery.subscriptions.set(key, enriched);
-  }
-  otcPostPort({ type: 'SHADOW_RECOVERY_CONTEXT', payload: enriched });
-}
-
 function otcSendLifecycle(reason: string): void {
-  const visibility = document.visibilityState;
-  otcPostPort({
-    type: 'SOURCE_TAB_LIFECYCLE',
-    payload: {
-      pageSessionId: otcPageSessionId,
-      reason,
-      visibility,
-      hidden: document.hidden,
-      capturedAt: Date.now(),
-    },
-  });
+  otcPostPort({ type: 'SOURCE_TAB_LIFECYCLE', payload: { pageSessionId: otcPageSessionId, reason, visibility: document.visibilityState, hidden: document.hidden, capturedAt: Date.now() } });
 }
-
 window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
   if (!otcPageOriginUsable || messageEvent.source !== window || messageEvent.origin !== otcPageOrigin) return;
   if (!otcIsRecord(messageEvent.data) || messageEvent.data.source !== OTC_BRIDGE_SOURCE) return;
@@ -225,35 +105,30 @@ window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
     otcPostPort({ type: 'SOURCE_CONNECTION_EVENT', payload: { pageSessionId: otcPageSessionId, event: payload, capturedAt: Date.now() } });
     return;
   }
-  if (otcIsRecoveryContext(payload)) {
-    otcRememberRecoveryContext(payload);
+  if (otcIsShadowTransport(payload)) {
+    otcPostPort({ type: 'SHADOW_TRANSPORT_EVENT', payload: { ...payload, pageSessionId: otcPageSessionId } });
     return;
   }
-  if (otcIsSemanticPriceEvent(payload) || otcIsSemanticPayoutEvent(payload)) {
-    otcPushSemantic(payload);
-    return;
-  }
+  if (otcIsSemanticPriceEvent(payload) || otcIsSemanticPayoutEvent(payload)) { otcPushSemantic(payload); return; }
   if (otcIsDiscoveryObservation(payload)) otcPostPort({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
 });
-
 document.addEventListener('visibilitychange', () => otcSendLifecycle('VISIBILITY_CHANGE'));
 window.addEventListener('pageshow', () => otcSendLifecycle('PAGE_SHOW'));
 window.addEventListener('pagehide', () => otcSendLifecycle('PAGE_HIDE'));
 document.addEventListener('freeze', () => otcSendLifecycle('PAGE_FREEZE'));
 document.addEventListener('resume', () => otcSendLifecycle('PAGE_RESUME'));
-
 if (otcPageOriginUsable) {
   otcConnectPort();
   otcSendLifecycle('CONTENT_SCRIPT_READY');
-  const otcBridgeScript = document.createElement('script');
-  otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
-  otcBridgeScript.type = 'module';
-  otcBridgeScript.onload = () => {
-    otcBridgeScript.remove();
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
+  script.type = 'module';
+  script.onload = () => {
+    script.remove();
     void chrome.storage.local.get(['protocolMode']).then((settings) => {
       const mode = settings.protocolMode === 'PROTOCOL_DISCOVERY' ? 'PROTOCOL_DISCOVERY' : 'PRODUCTION';
       window.postMessage({ source: OTC_CONTROL_SOURCE, mode }, otcPageOrigin);
     });
   };
-  (document.head || document.documentElement).appendChild(otcBridgeScript);
+  (document.head || document.documentElement).appendChild(script);
 }

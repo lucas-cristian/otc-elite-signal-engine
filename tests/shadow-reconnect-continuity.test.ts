@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import type { SignalRecord } from '../src/common/models/journal-types.js';
 import type { MarketSourceIdentity, Tick } from '../src/common/models/types.js';
 import { DEFAULT_PIPELINE_CONFIG, QuantPipeline } from '../src/service-worker/core/quant-pipeline.js';
-import { isSafeShadowReplayPacket } from '../src/service-worker/core/shadow-market-connection.js';
+import { isSafeShadowReplayPacket } from '../src/common/protocol/shadow-market-policy.js';
 import { MemoryJournal } from '../src/service-worker/storage/memory-journal.js';
 
 const identity: MarketSourceIdentity = {

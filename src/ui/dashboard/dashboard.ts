@@ -1,6 +1,6 @@
 interface PerformanceSliceResponse { key: string; resolved: number; correct: number; accuracy: number | null; }
 interface AssetFeedHealthResponse { canonicalAssetId: string; feedId: string; state: string; reason: string; latestTickAgeMs: number | null; }
-interface CaptureTransportResponse { connected: boolean; visibility: string; frozen: boolean | null; discarded: boolean | null; autoDiscardable: boolean | null; lastSemanticEventAt: number | null; lastLifecycleEventAt: number | null; lastLifecycleReason: string | null; shadowConnected: boolean; shadowState: string; shadowEndpointHost: string | null; shadowReconnectAttempts: number; shadowLastMessageAt: number | null; shadowLastPriceAt: number | null; shadowLastErrorReason: string | null; mitigation: string; }
+interface CaptureTransportResponse { connected: boolean; visibility: string; frozen: boolean | null; discarded: boolean | null; autoDiscardable: boolean | null; lastSemanticEventAt: number | null; lastLifecycleEventAt: number | null; lastLifecycleReason: string | null; shadowConnected: boolean; shadowPrimary: boolean; shadowState: string; shadowEndpointHost: string | null; shadowReconnectAttempts: number; shadowConsecutiveNamespaceRejects: number; shadowCircuitOpen: boolean; shadowLastMessageAt: number | null; shadowLastPriceAt: number | null; shadowLastErrorReason: string | null; shadowLastCommandAt: number | null; mitigation: string; }
 
 interface AnalyticsResponse {
   tickCount?: number;
@@ -154,12 +154,16 @@ async function load(): Promise<void> {
       `Last lifecycle event: ${timestamp(response.captureTransport?.lastLifecycleEventAt)}`,
       `Last lifecycle reason: ${response.captureTransport?.lastLifecycleReason ?? 'N/A'}`,
       `Shadow market socket: ${response.captureTransport?.shadowConnected ?? false}`,
+      `Shadow primary feed: ${response.captureTransport?.shadowPrimary ?? false}`,
       `Shadow state: ${response.captureTransport?.shadowState ?? 'WAITING_CONTEXT'}`,
       `Shadow endpoint: ${response.captureTransport?.shadowEndpointHost ?? 'N/A'}`,
       `Shadow reconnect attempts: ${response.captureTransport?.shadowReconnectAttempts ?? 0}`,
+      `Shadow namespace rejects: ${response.captureTransport?.shadowConsecutiveNamespaceRejects ?? 0}`,
+      `Shadow circuit open: ${response.captureTransport?.shadowCircuitOpen ?? false}`,
       `Shadow last message: ${timestamp(response.captureTransport?.shadowLastMessageAt)}`,
       `Shadow last price: ${timestamp(response.captureTransport?.shadowLastPriceAt)}`,
       `Shadow last error: ${response.captureTransport?.shadowLastErrorReason ?? 'none'}`,
+      `Shadow last supervisor command: ${timestamp(response.captureTransport?.shadowLastCommandAt)}`,
       `Transport mitigation: ${response.captureTransport?.mitigation ?? 'N/A'}`,
       '',
       'LIVE DATA HEALTH WATCHDOG',

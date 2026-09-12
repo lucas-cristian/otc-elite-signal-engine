@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OTC Elite Signal Engine",
-  "version": "1.6.0",
-  "description": "Signal-only quantitative laboratory for Pocket Option OTC reference-feed research with resilient shadow market transport",
+  "version": "1.7.0",
+  "description": "Signal-only quantitative laboratory for Pocket Option OTC research with MAIN-world shadow feed continuity",
   "permissions": [
     "storage",
     "unlimitedStorage",
@@ -33,7 +33,8 @@
         "src/common/protocol/pocket-option-parser.js",
         "src/common/hashing/canonical-hash.js",
         "src/common/hashing/sha256.js",
-        "src/common/protocol/protocol-verification-registry.js"
+        "src/common/protocol/protocol-verification-registry.js",
+        "src/common/protocol/shadow-market-policy.js"
       ],
       "matches": [
         "https://*.pocketoption.com/*"
@@ -48,7 +49,7 @@
     "open_in_tab": true
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' wss://*.po.market"
+    "extension_pages": "script-src 'self'; object-src 'self'"
   },
   "minimum_chrome_version": "116"
 }

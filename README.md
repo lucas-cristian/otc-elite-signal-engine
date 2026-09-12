@@ -8,11 +8,11 @@ The extension never clicks CALL/PUT, never sends `openOrder`, never executes a t
 
 Authentication/session packets used by the recovery socket are ephemeral runtime context. They are not written to IndexedDB, extension storage, logs, datasets, build artifacts, or source control.
 
-## Release 1.6.0
+## Release 1.7.0
 
-Release 1.6.0 adds two protections that are required for unattended data collection:
+Release 1.7.0 adds two protections that are required for unattended data collection:
 
-1. **extension-owned shadow market WebSocket** — the Service Worker can keep receiving the verified Pocket Option market protocol even when the broker page's own chart/socket becomes idle in a hidden tab;
+1. **MAIN-world native shadow market WebSocket** — an independent market-only socket is created in the Pocket Option page context with the native WebSocket constructor, while the Service Worker only supervises health/reconnect commands;
 2. **feed continuity epochs** — any disconnect, connection switch, page-session switch, or tick gap above the frozen continuity threshold ends the old quantitative epoch. Candles, features, regimes, pending entry/result work, and active market episodes cannot cross that boundary.
 
 Chrome 116+ is required because resilient WebSockets in extension Service Workers depend on the Chrome 116 lifecycle behavior.
@@ -86,7 +86,7 @@ Page observes market endpoint + auth + safe subscriptions
         ↓ ephemeral only
 ISOLATED content script
         ↓ runtime.Port
-Service Worker ShadowMarketConnection
+MAIN World native shadow connection + Service Worker supervisor
         ↓
 independent wss://*.po.market Socket.IO connection
         ↓
@@ -215,7 +215,7 @@ The dataset never contains the shadow authentication packet or account session s
 ## Schema versions
 
 ```text
-Application              1.6.0
+Application              1.7.0
 Tick                     v4
 Candle                   v4
 Decision                 v5
