@@ -34,14 +34,18 @@ function setupPageBridge() {
       
       this.connectionId = generateConnectionId();
 
-      emitEvent({
-        type: 'CONNECTION',
-        connectionId: this.connectionId,
-        event: 'OPEN',
-        timestampMs: Date.now()
+      this.addEventListener('open', () => {
+        console.log('[PageBridge] WebSocket opened:', String(url));
+        emitEvent({
+          type: 'CONNECTION',
+          connectionId: this.connectionId,
+          event: 'OPEN',
+          timestampMs: Date.now()
+        });
       });
 
       this.addEventListener('close', () => {
+        console.log('[PageBridge] WebSocket closed:', String(url));
         emitEvent({
           type: 'CONNECTION',
           connectionId: this.connectionId,
