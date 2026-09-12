@@ -61,13 +61,42 @@ function useJournal(asset: string, interval = 5000) {
   return { ...state, refresh: load };
 }
 
+function StatCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color: string }) {
+  return (
+    <div className={`stat-card ${color}`}>
+      <div className="stat-label">{label}</div>
+      <div className={`stat-value ${color}`}>{value}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
+    </div>
+  );
+}
+
 export default function App() {
-  const { analytics } = useJournal('ALL');
-  
+  const [asset, setAsset] = useState('ALL');
+  const { signals, results, analytics, lastUpdated, loading, error, refresh } = useJournal(asset);
+
+  const ci = analytics.directionalAccuracy;
+  const wr = ci ? `${(ci.observedRate * 100).toFixed(1)}%` : '—';
+  const ts = lastUpdated > 0 ? new Date(lastUpdated).toLocaleTimeString('pt-BR') : '—';
+
   return (
     <div className="app">
-      <h1>Dashboard Inicializado</h1>
-      <p>Decisões tomadas: {analytics.decisionCount}</p>
+      <header className="header">
+        <div className="header-brand">
+          <div className="logo-dot" />
+          <h1>OTC Elite Signal Engine</h1>
+          <span className="version-tag">v1.0 · REFERENCE_FEED</span>
+        </div>
+      </header>
+
+      <main className="main-content">
+        {error && <div className="disclaimer">⚠️ Erro IDB: {error}</div>}
+        <div className="stats-row">
+          <StatCard label="Decisões" value={String(analytics.decisionCount)} sub={`${analytics.callDecisionCount}↑ · ${analytics.putDecisionCount}↓`} color="blue" />
+          <StatCard label="Sinais" value={String(signals.length)} sub={`${analytics.entryUnresolvedCount} não resolvidas`} color="green" />
+          <StatCard label="Win Rate" value={wr} sub={`n = ${analytics.correctCount + analytics.incorrectCount}`} color="green" />
+        </div>
+      </main>
     </div>
   );
 }
