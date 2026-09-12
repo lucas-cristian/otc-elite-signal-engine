@@ -15,7 +15,7 @@ export class DecisionEngine {
             blockers.push('CORE_WARMUP');
         if (input.eventIntegrity !== 'VALID')
             blockers.push('EVENT_INTEGRITY');
-        if (input.sourceQuality !== 'VERIFIED')
+        if (input.sourceQuality !== 'VERIFIED' || input.sourceProtocolVerificationId === null)
             blockers.push('UNVERIFIED_SOURCE_SCHEMA');
         if (input.operationalDataState !== 'HEALTHY')
             blockers.push(`DATA_STATE_${input.operationalDataState}`);
@@ -49,7 +49,7 @@ export class DecisionEngine {
         });
         const publishedAt = input.computedAt;
         return {
-            decisionSchemaVersion: '2',
+            decisionSchemaVersion: '3',
             decisionId,
             decisionGranularityKey,
             executionMode: this.config.executionMode,
@@ -70,6 +70,7 @@ export class DecisionEngine {
             featureSnapshot: input.features,
             evidenceSnapshot,
             sourceQuality: input.sourceQuality,
+            sourceProtocolVerificationId: input.sourceProtocolVerificationId,
             eventIntegrity: input.eventIntegrity,
             operationalDataState: input.operationalDataState,
             blockers,

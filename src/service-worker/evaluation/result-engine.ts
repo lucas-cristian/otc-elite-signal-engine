@@ -27,7 +27,10 @@ function evaluateEconomicOutcome(
   if (payout.payoutRate === null) {
     return { outcome: 'UNKNOWN', economicReturn: null, reason: 'PAYOUT_RATE_MISSING' };
   }
-  if (payout.quality !== 'VERIFIED') {
+  if (payout.expirationBinding === 'UNBOUND') {
+    return { outcome: 'UNKNOWN', economicReturn: null, reason: 'PAYOUT_EXPIRATION_UNBOUND' };
+  }
+  if (payout.quality !== 'VERIFIED' || payout.protocolVerificationId === null) {
     return { outcome: 'UNKNOWN', economicReturn: null, reason: 'PAYOUT_UNVERIFIED' };
   }
   if (payout.expirationSeconds === null) {
@@ -102,9 +105,9 @@ export class ResultEngine {
     };
   }
 
-  public timeout(signal: SignalRecord, nowMs: number): ResultRecord | null {
+  public timeout(signal: SignalRecord, nowMs: number, reason: 'EXPIRY_TIMEOUT' | 'DATA_UNAVAILABLE' = 'EXPIRY_TIMEOUT'): ResultRecord | null {
     if (nowMs <= signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs) return null;
-    return this.unresolved(signal, 'EXPIRY_TIMEOUT', nowMs, null);
+    return this.unresolved(signal, reason, nowMs, null);
   }
 
   private unresolved(

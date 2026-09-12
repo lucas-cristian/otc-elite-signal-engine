@@ -1,8 +1,8 @@
 {
-  "appVersion": "1.3.0",
+  "appVersion": "1.4.0",
   "buildSystem": "tsc",
-  "buildId": "source-07e288f1d0a33336",
-  "sourceTreeSha256": "07e288f1d0a333366698c1e812b050ee53dbd635a4ceebef4ad15eabaf847c0b",
+  "buildId": "source-0da29d020f73a906",
+  "sourceTreeSha256": "0da29d020f73a90692633b13fe77c7cf6d82986bc6193ded5ae9667af3c0da37",
   "gitCommit": null,
   "gitWorkingTreeClean": null
 }

@@ -9,6 +9,7 @@ export type ExpiryPolicy = 'FIXED_DELAY_FROM_ENTRY';
 export type Timeframe = '5s' | '10s' | '15s' | '30s' | '60s';
 export type StructureRegime = 'TREND_UP' | 'TREND_DOWN' | 'RANGE' | 'CHAOTIC' | 'UNKNOWN';
 export type VolatilityRegime = 'LOW' | 'NORMAL' | 'HIGH' | 'UNKNOWN';
+export type PayoutExpirationBinding = 'UNBOUND' | 'EXPLICIT_PROTOCOL' | 'EXPLICIT_DOM';
 
 export interface MarketSourceIdentity {
   marketSourceIdentitySchemaVersion: '2';
@@ -22,7 +23,7 @@ export interface MarketSourceIdentity {
 }
 
 export interface Tick {
-  tickSchemaVersion: '3';
+  tickSchemaVersion: '4';
   tickId: string;
   marketSourceIdentity: MarketSourceIdentity;
   pageSessionId: string;
@@ -35,10 +36,11 @@ export interface Tick {
   timestampBasis: TimestampBasis;
   sourceClockSynchronized: boolean;
   observedTimestampDeltaMs: number | null;
-  transportLatencyMs: null;
+  transportLatencyMs: number | null;
   price: number;
   integrity: EventIntegrity;
   sourceQuality: SourceQuality;
+  protocolVerificationId: string | null;
 }
 
 export type CandleLifecycle = 'FORMING' | 'CLOSED' | 'EMPTY_INTERVAL';
@@ -61,13 +63,15 @@ export interface Candle {
 }
 
 export interface PayoutSnapshot {
-  payoutSnapshotSchemaVersion: '2';
+  payoutSnapshotSchemaVersion: '3';
   canonicalAssetId: string;
   expirationSeconds: number | null;
+  expirationBinding: PayoutExpirationBinding;
   payoutRate: number | null;
   capturedAt: number;
   source: 'PLATFORM_PROTOCOL' | 'PLATFORM_DOM' | 'UNKNOWN';
   quality: SourceQuality;
   feedId: string | null;
   parserSchemaId: string | null;
+  protocolVerificationId: string | null;
 }

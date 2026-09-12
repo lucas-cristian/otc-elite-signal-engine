@@ -1,7 +1,5 @@
 import { getCanonicalAssetId } from '../hashing/canonical-hash.js';
-const VERIFIED_DEMO_HOSTS = new Set(['demo-api-eu.po.market']);
-const STREAM_SCHEMA_ID = 'POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1';
-const PAYOUT_SCHEMA_ID = 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1';
+import { POCKET_OPTION_PAYOUT_SCHEMA_ID, POCKET_OPTION_STREAM_SCHEMA_ID, resolveProtocolVerification, } from './protocol-verification-registry.js';
 function parseJsonValue(text) {
     try {
         return JSON.parse(text);
@@ -26,10 +24,6 @@ function endpointHost(endpointUrl) {
 }
 function isPocketOptionMarketHost(host) {
     return host !== null && (host === 'po.market' || host.endsWith('.po.market'));
-}
-function schemaQuality(endpointUrl) {
-    const host = endpointHost(endpointUrl);
-    return host !== null && VERIFIED_DEMO_HOSTS.has(host) ? 'VERIFIED' : 'INFERRED';
 }
 function isOtcAsset(asset) {
     return asset.toLowerCase().endsWith('_otc');
@@ -81,7 +75,17 @@ function parseBinaryHeader(text) {
 function parseUpdateStream(payload, context) {
     if (!Array.isArray(payload) || payload.length === 0)
         return [];
-    const quality = schemaQuality(context.endpointUrl);
+    const host = endpointHost(context.endpointUrl);
+    if (!host || !isPocketOptionMarketHost(host))
+        return [];
+    const verification = resolveProtocolVerification({
+        feedHost: host,
+        eventKind: 'PRICE_STREAM',
+        socketIoEventName: 'updateStream',
+        parserSchemaId: POCKET_OPTION_STREAM_SCHEMA_ID,
+        payloadShapeId: 'OTC_STREAM_TRIPLE_V1',
+        marketType: 'OTC',
+    });
     const events = [];
     for (const row of payload) {
         if (!Array.isArray(row) || row.length !== 3)
@@ -93,7 +97,7 @@ function parseUpdateStream(payload, context) {
             return [];
         if (!isOtcAsset(asset))
             continue;
-        const marketIdentity = identity(asset, context.endpointUrl, STREAM_SCHEMA_ID);
+        const marketIdentity = identity(asset, context.endpointUrl, POCKET_OPTION_STREAM_SCHEMA_ID);
         if (!marketIdentity)
             return [];
         const sourceTimestampEpochMs = plausibleSourceTimestampMs(timestampSeconds * 1000, context.receivedAtEpochMs);
@@ -106,7 +110,8 @@ function parseUpdateStream(payload, context) {
             price,
             sourceTimestampEpochMs,
             sourceClockSynchronized: false,
-            sourceQuality: quality,
+            sourceQuality: verification.quality,
+            protocolVerificationId: verification.verificationId,
             receivedAtEpochMs: context.receivedAtEpochMs,
             receivedAtMonotonicMs: context.receivedAtMonotonicMs,
         });
@@ -119,7 +124,14 @@ function parseChafor(payload, context) {
     const host = endpointHost(context.endpointUrl);
     if (!host || !isPocketOptionMarketHost(host))
         return [];
-    const quality = schemaQuality(context.endpointUrl);
+    const verification = resolveProtocolVerification({
+        feedHost: host,
+        eventKind: 'PAYOUT',
+        socketIoEventName: 'chafor',
+        parserSchemaId: POCKET_OPTION_PAYOUT_SCHEMA_ID,
+        payloadShapeId: 'OTC_PAYOUT_PAIR_V1',
+        marketType: 'OTC',
+    });
     const events = [];
     for (const row of payload) {
         if (!Array.isArray(row) || row.length !== 2)
@@ -130,17 +142,18 @@ function parseChafor(payload, context) {
             return [];
         if (!isOtcAsset(asset))
             continue;
-        const canonicalAssetId = getCanonicalAssetId(asset);
         const payoutSnapshot = {
-            payoutSnapshotSchemaVersion: '2',
-            canonicalAssetId,
+            payoutSnapshotSchemaVersion: '3',
+            canonicalAssetId: getCanonicalAssetId(asset),
             expirationSeconds: null,
+            expirationBinding: 'UNBOUND',
             payoutRate: payoutPercent / 100,
             capturedAt: context.receivedAtEpochMs,
             source: 'PLATFORM_PROTOCOL',
-            quality,
+            quality: verification.quality,
             feedId: host,
-            parserSchemaId: PAYOUT_SCHEMA_ID,
+            parserSchemaId: POCKET_OPTION_PAYOUT_SCHEMA_ID,
+            protocolVerificationId: verification.verificationId,
         };
         events.push({ type: 'SEMANTIC_PAYOUT', connectionId: context.connectionId, payoutSnapshot });
     }
@@ -154,9 +167,7 @@ function parseVerifiedAttachment(eventName, text, context) {
     const payload = parseJsonValue(text);
     if (payload === null)
         return [];
-    if (eventName === 'updateStream')
-        return parseUpdateStream(payload, context);
-    return parseChafor(payload, context);
+    return eventName === 'updateStream' ? parseUpdateStream(payload, context) : parseChafor(payload, context);
 }
 async function binaryText(data) {
     if (data instanceof Blob)

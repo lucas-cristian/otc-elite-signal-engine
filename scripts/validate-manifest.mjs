@@ -1,7 +1,23 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+
 const manifest = JSON.parse(readFileSync('dist/manifest.json', 'utf8'));
-const required = [manifest.background?.service_worker, ...(manifest.content_scripts ?? []).flatMap((entry) => entry.js ?? []), manifest.action?.default_popup, manifest.options_ui?.page];
+const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
+const required = [
+  manifest.background?.service_worker,
+  ...(manifest.content_scripts ?? []).flatMap((entry) => entry.js ?? []),
+  manifest.action?.default_popup,
+  manifest.options_ui?.page,
+];
+
 if (manifest.manifest_version !== 3) throw new Error('manifest_version must be 3');
-if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.every((p) => p.includes('pocketoption.com'))) throw new Error('host_permissions must be Pocket Option only');
-for (const path of required) if (typeof path !== 'string' || !existsSync(`dist/${path}`)) throw new Error(`Missing manifest artifact: ${String(path)}`);
+if (manifest.version !== packageJson.version) throw new Error('manifest version must match package version');
+if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.every((permission) => permission.includes('pocketoption.com'))) {
+  throw new Error('host_permissions must be Pocket Option only');
+}
+if (!Array.isArray(manifest.permissions) || !manifest.permissions.includes('alarms')) throw new Error('alarms permission is required for MV3 data-health watchdog');
+const resources = (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []);
+if (!resources.includes('src/common/protocol/protocol-verification-registry.js')) throw new Error('protocol verification registry must be web-accessible to MAIN world parser');
+for (const artifactPath of required) {
+  if (typeof artifactPath !== 'string' || !existsSync(`dist/${artifactPath}`)) throw new Error(`Missing manifest artifact: ${String(artifactPath)}`);
+}
 console.log('manifest valid');

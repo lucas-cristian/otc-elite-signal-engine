@@ -13,9 +13,9 @@ const source: MarketSourceIdentity = {
 
 function tick(ts: number, price: number, seq: number): Tick {
   return {
-    tickSchemaVersion: '3', tickId: `t${seq}`, marketSourceIdentity: source, pageSessionId: 's1', connectionId: 'c1', sequence: seq,
+    tickSchemaVersion: '4', tickId: `t${seq}`, marketSourceIdentity: source, pageSessionId: 's1', connectionId: 'c1', sequence: seq,
     sourceTimestampEpochMs: ts, receivedAtEpochMs: ts + 5, receivedAtMonotonicMs: seq, eventTimestampEpochMs: ts,
-    timestampBasis: 'SOURCE', sourceClockSynchronized: true, observedTimestampDeltaMs: 5, transportLatencyMs: null, price, integrity: 'VALID', sourceQuality: 'VERIFIED',
+    timestampBasis: 'SOURCE', sourceClockSynchronized: true, observedTimestampDeltaMs: 5, transportLatencyMs: null, price, integrity: 'VALID', sourceQuality: 'VERIFIED', protocolVerificationId: 'TEST_VERIFIED_STREAM',
   };
 }
 
@@ -41,7 +41,7 @@ test('decision keeps calibratedProbability null and blocks degraded data', () =>
   };
   const decision = engine.evaluate({
     canonicalAssetId: 'EURUSDOTC', timeframe: '5s', candleStartTimestamp: 0, candleEndTimestamp: 5000, computedAt: 5001,
-    features, regime: { structure: 'TREND_UP', volatility: 'NORMAL' }, eventIntegrity: 'VALID', operationalDataState: 'DEGRADED', sourceQuality: 'VERIFIED',
+    features, regime: { structure: 'TREND_UP', volatility: 'NORMAL' }, eventIntegrity: 'VALID', operationalDataState: 'DEGRADED', sourceQuality: 'VERIFIED', sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM',
   });
   assert.equal(decision.calibratedProbability, null);
   assert.equal(decision.finalDecision, 'NO_TRADE');
@@ -50,10 +50,10 @@ test('decision keeps calibratedProbability null and blocks degraded data', () =>
 
 test('entry resolver never uses a tick observed before alert publication', () => {
   const decision: DecisionRecord = {
-    decisionSchemaVersion: '2', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe: '5s',
+    decisionSchemaVersion: '3', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe: '5s',
     decisionComputedAt: 1000, decisionPublishedAt: 1000, alertPublishedAt: 1000, evaluationWindowId: 'e1', candleStartTimestamp: 0,
     candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.8, calibratedProbability: null, structureRegime: 'TREND_UP', volatilityRegime: 'NORMAL',
-    strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
+    strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
     expirationSeconds: 60, configHash: 'cfg', configSnapshot: {}, appVersion: '1', marketEpisodeId: null, createdAt: 1000,
   };
   const resolver = new EntryResolver(3000);
@@ -73,7 +73,7 @@ test('unverified protocol schema fails closed before CALL or PUT', () => {
   };
   const decision = engine.evaluate({
     canonicalAssetId: 'EURUSDOTC', timeframe: '5s', candleStartTimestamp: 0, candleEndTimestamp: 5000, computedAt: 5001,
-    features, regime: { structure: 'TREND_UP', volatility: 'NORMAL' }, eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', sourceQuality: 'INFERRED',
+    features, regime: { structure: 'TREND_UP', volatility: 'NORMAL' }, eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', sourceQuality: 'INFERRED', sourceProtocolVerificationId: null,
   });
   assert.equal(decision.finalDecision, 'NO_TRADE');
   assert.ok(decision.blockers.includes('UNVERIFIED_SOURCE_SCHEMA'));

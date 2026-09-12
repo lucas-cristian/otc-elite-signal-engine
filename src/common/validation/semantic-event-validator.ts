@@ -8,6 +8,11 @@ function isSourceQuality(value: unknown): boolean {
   return value === 'VERIFIED' || value === 'INFERRED' || value === 'UNKNOWN';
 }
 
+function validVerificationPair(quality: unknown, verificationId: unknown): boolean {
+  if (quality === 'VERIFIED') return typeof verificationId === 'string' && verificationId.length > 0;
+  return verificationId === null;
+}
+
 export function isSemanticPriceEvent(value: unknown): value is SemanticPriceEvent {
   if (!isRecord(value) || value.type !== 'SEMANTIC_PRICE') return false;
   if (typeof value.connectionId !== 'string' || value.connectionId.length === 0) return false;
@@ -15,6 +20,7 @@ export function isSemanticPriceEvent(value: unknown): value is SemanticPriceEven
   if (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price <= 0) return false;
   if (value.sourceTimestampEpochMs !== null && (typeof value.sourceTimestampEpochMs !== 'number' || !Number.isFinite(value.sourceTimestampEpochMs))) return false;
   if (typeof value.sourceClockSynchronized !== 'boolean' || !isSourceQuality(value.sourceQuality)) return false;
+  if (!validVerificationPair(value.sourceQuality, value.protocolVerificationId)) return false;
   if (typeof value.receivedAtEpochMs !== 'number' || !Number.isFinite(value.receivedAtEpochMs)) return false;
   if (typeof value.receivedAtMonotonicMs !== 'number' || !Number.isFinite(value.receivedAtMonotonicMs)) return false;
   if (!isRecord(value.identity)) return false;
@@ -39,10 +45,11 @@ export function isSemanticPayoutEvent(value: unknown): value is SemanticPayoutEv
   if (!Number.isInteger(value.sequence) || (value.sequence as number) < 0) return false;
   if (!isRecord(value.payoutSnapshot)) return false;
   const payout = value.payoutSnapshot;
-  return payout.payoutSnapshotSchemaVersion === '2'
+  return payout.payoutSnapshotSchemaVersion === '3'
     && typeof payout.canonicalAssetId === 'string'
     && payout.canonicalAssetId.length > 0
     && payout.expirationSeconds === null
+    && payout.expirationBinding === 'UNBOUND'
     && typeof payout.payoutRate === 'number'
     && Number.isFinite(payout.payoutRate)
     && payout.payoutRate >= 0
@@ -51,6 +58,7 @@ export function isSemanticPayoutEvent(value: unknown): value is SemanticPayoutEv
     && Number.isFinite(payout.capturedAt)
     && payout.source === 'PLATFORM_PROTOCOL'
     && isSourceQuality(payout.quality)
+    && validVerificationPair(payout.quality, payout.protocolVerificationId)
     && typeof payout.feedId === 'string'
     && payout.feedId.endsWith('.po.market')
     && typeof payout.parserSchemaId === 'string'

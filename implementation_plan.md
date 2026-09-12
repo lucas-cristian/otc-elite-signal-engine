@@ -2,15 +2,45 @@
 
 ## Status
 
-Release: **1.3.0**
+Release: **1.4.0**
 
-Scientific runtime status: **DEMO BINARY MARKET SCHEMA VERIFIED FOR `demo-api-eu.po.market`; OTHER FEEDS FAIL CLOSED**.
+Protocol registry: **2026-09-12.1**
 
-The exact Engine.IO 4 / Socket.IO binary schema used by the Pocket Option DEMO endpoint was captured and validated on 2026-09-12. Verification is scoped to the observed endpoint and exact parser schemas; it is not generalized to REAL endpoints or unobserved DEMO regions.
+Scientific runtime status: exact captured Socket.IO binary schemas are verified only through frozen registry evidence; unregistered feeds fail closed.
 
-## 1. Verified WebSocket transport
+## 1. Protocol authority
 
-Observed price sequence:
+The runtime no longer equates DEMO hostname with verification. `protocol-verification-registry.ts` requires the exact tuple:
+
+```text
+feed host
++ event kind
++ Socket.IO event name
++ parser schema ID
++ payload shape ID
++ OTC market semantics
+```
+
+Frozen captured hosts:
+
+```text
+demo-api-eu.po.market
+api-us-north.po.market
+api-us-south.po.market
+```
+
+Frozen event schemas:
+
+```text
+updateStream -> POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1 -> OTC_STREAM_TRIPLE_V1
+chafor       -> POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1 -> OTC_PAYOUT_PAIR_V1
+```
+
+Each registry record stores verification ID, evidence time and capture SHA-256. Unregistered hosts remain `INFERRED` even if they parse structurally.
+
+## 2. Market protocol
+
+Price sequence:
 
 ```text
 451-["updateStream",{"_placeholder":true,"num":0}]
@@ -23,7 +53,7 @@ Attachment:
 [[asset, sourceTimestampSeconds, price]]
 ```
 
-Observed payout sequence:
+Payout sequence:
 
 ```text
 451-["chafor",{"_placeholder":true,"num":0}]
@@ -36,112 +66,77 @@ Attachment:
 [[asset, payoutPercent]]
 ```
 
-Observed history bootstrap:
+Historical bootstrap remains non-causal for live signals.
+
+## 3. Tick and source semantics
+
+Tick schema v4 adds `protocolVerificationId`. VERIFIED source quality is valid only with a non-null registry evidence ID. The decision record (schema v3) stores the source protocol verification ID used at decision time.
+
+Pocket Option source time remains unsynchronized from browser epoch in the captured evidence, so `LOCAL_RECEIPT` remains the causal event time and transport latency remains null.
+
+## 4. Data-health watchdog
+
+The old latest-decision health display was insufficient because it could remain `HEALTHY` forever after the feed stopped. Release 1.4.0 adds wall-clock health independent from market arrival:
 
 ```text
-451-["updateHistoryNewFast",{"_placeholder":true,"num":0}]
-<binary attachment containing asset, period, history and candles>
+<= 5 s   HEALTHY
+<= 15 s  DEGRADED
+<= 60 s  STALE
+> 60 s   DATA_UNAVAILABLE
 ```
 
-Historical bootstrap packets are consumed but do not generate retrospective live decisions.
+The watchdog runs on analytics refresh/export and through `chrome.alarms`. Pending entry/result deadlines are processed even when no market tick arrives. `FEED_STALE` and `DATA_UNAVAILABLE` are therefore real terminal reasons rather than unreachable enum values.
 
-## 2. MAIN World
+## 5. Payout binding
 
-`src/main-world/page-bridge.ts` intercepts only Pocket Option `*.po.market` WebSockets. Each connection owns a stateful `PocketOptionSocketIoDecoder` and a serialized inbound promise chain so Blob decoding cannot reorder WebSocket frames.
-
-Semantic sequence numbers are assigned only after successful semantic decoding. Engine.IO handshakes, heartbeat frames, unknown events and historical bootstrap frames therefore do not create downstream sequence gaps.
-
-PRODUCTION forwards only semantic price/payout events. PROTOCOL_DISCOVERY forwards structural metadata only.
-
-## 3. Strict parser and source identity
-
-`src/common/protocol/pocket-option-parser.ts`:
-
-- accepts the captured `451-` one-attachment form;
-- requires the exact Socket.IO placeholder structure;
-- decodes Blob, ArrayBuffer and ArrayBufferView attachments;
-- accepts only finite positive price values;
-- accepts only `_otc` assets into the OTC pipeline;
-- attaches feed host and parser schema to `MarketSourceIdentity`;
-- marks only `demo-api-eu.po.market` + frozen observed schemas as `VERIFIED`;
-- marks matching REAL/unfrozen feeds `INFERRED`;
-- rejects malformed or unknown structures instead of guessing.
-
-## 4. Clock model
-
-The captured source clock was approximately two hours ahead of browser receipt time with a stable offset. The model therefore preserves both clocks but treats them as unsynchronized:
+PayoutSnapshot schema v3 separates protocol verification from expiration binding:
 
 ```text
-sourceTimestampEpochMs = observed platform timestamp
-receivedAtEpochMs = browser epoch receipt time
-eventTimestampEpochMs = receivedAtEpochMs
-timestampBasis = LOCAL_RECEIPT
-sourceClockSynchronized = false
-observedTimestampDeltaMs = receivedAtEpochMs - sourceTimestampEpochMs
-transportLatencyMs = null
+quality = VERIFIED        # observed chafor schema/value is verified
+expirationBinding = UNBOUND
+expirationSeconds = null  # current captured chafor does not expose scope
 ```
 
-A stable unsynchronized offset does not by itself mark an otherwise valid tick `SUSPECT`.
+Future eligibility requires `EXPLICIT_PROTOCOL` or `EXPLICIT_DOM` binding and an exact expiration match. No economic WIN/LOSS is produced while the payout is unbound.
 
-## 5. Payout model
+## 6. Pipeline and recovery
 
-`chafor` produces an immutable `PayoutSnapshot` independent of price packets.
+The pipeline restores the latest persisted tick and latest payout-per-asset/feed on MV3 restart. The protocol registry version is part of the scientific config hash so changing registry authority necessarily changes configuration identity.
 
-The observed frame does not identify an expiration duration, therefore:
+IndexedDB version is 5.
+
+## 7. Dataset and replay
+
+Dataset schema v3 records:
+
+- source-tree SHA-256;
+- optional clean Git SHA;
+- config hashes;
+- protocol registry version;
+- verification IDs actually used;
+- export-time operational state/reason;
+- latest tick age at export;
+- complete append-only scientific journal;
+- deterministic dataset checksum/ID.
+
+Replay uses the same watchdog and quantitative pipeline as live mode.
+
+## 8. Dashboard
+
+Telemetry now separates:
 
 ```text
-expirationSeconds = null
+source quality / protocol verification
+current wall-clock operational state
+latest decision-time operational state
+watchdog reason and freshness thresholds
+payout protocol verification
+payout expiration binding
 ```
 
-Payout is keyed by canonical asset + feed. Cross-feed payout reuse is prohibited.
+This prevents a historical `HEALTHY` decision from being mistaken for a currently healthy feed.
 
-## 6. ISOLATED World
-
-The content script validates semantic price and payout events, maintains per-connection semantic order, batches them and sends them to the Service Worker. Raw WebSocket bytes never cross the production MAIN → ISOLATED boundary.
-
-The PageBridge is installed before the asynchronous storage lookup for protocol mode, preventing the mode lookup from delaying WebSocket interception.
-
-## 7. Quantitative pipeline
-
-The Service Worker processes price and payout as separate chronological event types. Price events create Tick v3 records. Payout events update immutable journal state and the current feed-scoped payout cache.
-
-Source quality is carried by each Tick. Decision source quality is no longer a global boolean; it is derived from the actual feed/schema that produced the observation.
-
-A REAL endpoint with an otherwise matching schema remains `INFERRED` and is blocked by `UNVERIFIED_SOURCE_SCHEMA`.
-
-## 8. Scientific timeframes and features
-
-Supported timeframes remain exactly:
-
-```text
-5s
-10s
-15s
-30s
-60s
-```
-
-Empty intervals have null OHLC. No synthetic carry-forward is permitted.
-
-Causal feature families, regime detection, five independent strategies, evidence-family caps, deterministic decision IDs, `modelScore` semantics and `calibratedProbability = null` remain unchanged from the scientific remediation baseline.
-
-## 9. Recovery, results and replay
-
-MV3 recovery continues to derive pending entries/results from append-only journal set differences.
-
-Replay now interleaves payout snapshots and ticks by capture time and sends both through the same `QuantPipeline` used live.
-
-IndexedDB version is bumped to 4 to prevent pre-1.3.0 result semantics from mixing with fail-closed economic evaluation.
-
-## 9A. Fail-closed economic evaluation and reproducible export
-
-Directional reference evaluation remains independent from payout. Economic evaluation is eligible only when the immutable payout snapshot is `VERIFIED`, has a non-null `expirationSeconds`, and exactly matches the signal expiration. The observed `chafor` schema does not carry expiration scope, so those snapshots remain scientifically ineligible for economic return.
-
-Result schema v3 records an explicit `economicEvaluationReason`. Dataset schema v2 records deterministic source-tree SHA-256, build ID, optional clean-checkout Git SHA and clean/unknown Git state. Live export and replay finalize pending timeout state through the dataset creation timestamp.
-
-The dashboard exposes live tick/candle telemetry, source quality, feed, latest price, payout scope, regime, blockers and pending entry/result counts.
-
-## 10. Validation gates
+## 9. Validation gates
 
 ```text
 npm run typecheck
@@ -151,41 +146,41 @@ npm run validate:manifest
 npm run verify
 ```
 
-Release 1.3.0 sandbox result:
+Sandbox result:
 
 ```text
 typecheck: PASS
-tests: 18/18 PASS
-captured DEMO raw protocol decoder replay: PASS
-captured price semantic events: 234
-captured payout semantic events: 24
-captured quantitative ticks: 234
-captured candles: 64
-captured decisions: 54
-captured signals: 4
-captured resolved results within capture window: 2
-all captured ticks integrity: VALID
-all captured ticks timestampBasis: LOCAL_RECEIPT
-all captured ticks sourceQuality: VERIFIED
+tests: 23/23 PASS
+build: PASS
+manifest: PASS
 ```
 
-## 11. Verification boundary
+Raw capture registry replay:
 
-The following are verified:
+```text
+demo-api-eu:   234 price + 24 payout VERIFIED
+api-us-north:   38 price +  2 payout VERIFIED
+api-us-south:  127 price +  6 payout VERIFIED
+```
 
-- `demo-api-eu.po.market`
-- `POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1`
-- `POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1`
-- exact `updateStream` attachment shape observed on 2026-09-12
-- exact `chafor` attachment shape observed on 2026-09-12
+Regression of the user-exported v1.3.0 session under v1.4.0 semantics:
 
-The following remain fail-closed until separately captured and frozen:
+```text
+692 ticks
+140 decisions
+18 CALL/PUT
+15 CALL / 3 PUT
+18 signals
+18 entries resolved
+6 directional results resolved
+12 results DATA_UNAVAILABLE after feed loss
+economic sample 0
+export state DATA_UNAVAILABLE
+latest tick age at export 243836 ms
+```
 
-- other DEMO regions;
-- REAL endpoints;
-- changed Socket.IO attachment counts;
-- changed event names;
-- changed payload layouts;
-- any source-clock synchronization assumption.
+The 6 directional results contain 2 correct and 4 incorrect. This tiny descriptive sample is not scientific evidence of profitability.
 
-No auto-trading, auto-click, order submission or broker execution path is part of the project.
+## 10. Frozen safety boundary
+
+No auto-trading, auto-click, CALL/PUT click, order submission or realized-P&L path is part of the project. Protocol verification only authorizes scientific signal processing of an observed feed schema; it does not authorize broker execution and does not establish strategy validity.

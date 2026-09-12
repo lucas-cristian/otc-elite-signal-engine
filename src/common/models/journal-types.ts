@@ -64,7 +64,7 @@ export interface EvaluationWindow {
 }
 
 export interface DecisionRecord {
-  decisionSchemaVersion: '2';
+  decisionSchemaVersion: '3';
   decisionId: string;
   decisionGranularityKey: string;
   executionMode: ExecutionMode;
@@ -85,6 +85,7 @@ export interface DecisionRecord {
   featureSnapshot: FeatureSnapshot | null;
   evidenceSnapshot: EvidenceSnapshot | null;
   sourceQuality: SourceQuality;
+  sourceProtocolVerificationId: string | null;
   eventIntegrity: EventIntegrity;
   operationalDataState: OperationalDataState;
   blockers: string[];
@@ -155,7 +156,7 @@ export interface DecisionSignalLink {
 export type ResolvedPriceOutcome = 'UP' | 'DOWN' | 'FLAT';
 export type ResolvedDirectionalOutcome = 'CORRECT' | 'INCORRECT' | 'FLAT';
 export type PlatformSettlementOutcome = 'WIN' | 'LOSS' | 'REFUND' | 'UNKNOWN';
-export type EconomicEvaluationReason = 'ELIGIBLE' | 'FLAT_REFERENCE_OUTCOME' | 'PAYOUT_RATE_MISSING' | 'PAYOUT_EXPIRATION_UNKNOWN' | 'PAYOUT_EXPIRATION_MISMATCH' | 'PAYOUT_UNVERIFIED' | 'RESULT_UNRESOLVED';
+export type EconomicEvaluationReason = 'ELIGIBLE' | 'FLAT_REFERENCE_OUTCOME' | 'PAYOUT_RATE_MISSING' | 'PAYOUT_EXPIRATION_UNBOUND' | 'PAYOUT_EXPIRATION_UNKNOWN' | 'PAYOUT_EXPIRATION_MISMATCH' | 'PAYOUT_UNVERIFIED' | 'RESULT_UNRESOLVED';
 export type SettlementConfidence = 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
 
 export interface SettlementMetadata {

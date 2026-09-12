@@ -4,12 +4,12 @@ import type { Tick } from '../models/types.js';
 
 export function createValidatedTick(event: SemanticPriceEvent, pageSessionId: string): Tick {
   const sourceTimestamp = event.sourceTimestampEpochMs;
+  const sourceClockSynchronized = event.sourceClockSynchronized;
+  const eventTimestampEpochMs = sourceTimestamp !== null && sourceClockSynchronized ? sourceTimestamp : event.receivedAtEpochMs;
   const observedTimestampDeltaMs = sourceTimestamp === null ? null : event.receivedAtEpochMs - sourceTimestamp;
-  const useSourceClock = event.sourceClockSynchronized && sourceTimestamp !== null;
-  const eventTimestampEpochMs = useSourceClock ? sourceTimestamp : event.receivedAtEpochMs;
-  const timestampBasis = useSourceClock ? 'SOURCE' : 'LOCAL_RECEIPT';
-  const integrity = useSourceClock && observedTimestampDeltaMs !== null && Math.abs(observedTimestampDeltaMs) > 60_000 ? 'SUSPECT' : 'VALID';
-  const tickId = canonicalEntityHash('TICK', 3, {
+  const integrity = event.sourceQuality === 'UNKNOWN' ? 'SUSPECT' : 'VALID';
+  const timestampBasis = sourceTimestamp !== null && sourceClockSynchronized ? 'SOURCE' : 'LOCAL_RECEIPT';
+  const tickId = canonicalEntityHash('TICK', 4, {
     identity: event.identity,
     pageSessionId,
     connectionId: event.connectionId,
@@ -17,9 +17,11 @@ export function createValidatedTick(event: SemanticPriceEvent, pageSessionId: st
     sourceTimestampEpochMs: sourceTimestamp,
     receivedAtEpochMs: event.receivedAtEpochMs,
     price: event.price,
+    sourceQuality: event.sourceQuality,
+    protocolVerificationId: event.protocolVerificationId,
   });
   return {
-    tickSchemaVersion: '3',
+    tickSchemaVersion: '4',
     tickId,
     marketSourceIdentity: event.identity,
     pageSessionId,
@@ -30,11 +32,12 @@ export function createValidatedTick(event: SemanticPriceEvent, pageSessionId: st
     receivedAtMonotonicMs: event.receivedAtMonotonicMs,
     eventTimestampEpochMs,
     timestampBasis,
-    sourceClockSynchronized: event.sourceClockSynchronized,
+    sourceClockSynchronized,
     observedTimestampDeltaMs,
-    transportLatencyMs: null,
+    transportLatencyMs: sourceTimestamp !== null && sourceClockSynchronized ? Math.max(0, observedTimestampDeltaMs ?? 0) : null,
     price: event.price,
     integrity,
     sourceQuality: event.sourceQuality,
+    protocolVerificationId: event.protocolVerificationId,
   };
 }

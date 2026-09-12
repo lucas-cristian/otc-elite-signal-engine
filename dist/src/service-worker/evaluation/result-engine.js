@@ -8,7 +8,10 @@ function evaluateEconomicOutcome(signal, directionalOutcome) {
     if (payout.payoutRate === null) {
         return { outcome: 'UNKNOWN', economicReturn: null, reason: 'PAYOUT_RATE_MISSING' };
     }
-    if (payout.quality !== 'VERIFIED') {
+    if (payout.expirationBinding === 'UNBOUND') {
+        return { outcome: 'UNKNOWN', economicReturn: null, reason: 'PAYOUT_EXPIRATION_UNBOUND' };
+    }
+    if (payout.quality !== 'VERIFIED' || payout.protocolVerificationId === null) {
         return { outcome: 'UNKNOWN', economicReturn: null, reason: 'PAYOUT_UNVERIFIED' };
     }
     if (payout.expirationSeconds === null) {
@@ -84,10 +87,10 @@ export class ResultEngine {
             evaluatedAt: tick.receivedAtEpochMs,
         };
     }
-    timeout(signal, nowMs) {
+    timeout(signal, nowMs, reason = 'EXPIRY_TIMEOUT') {
         if (nowMs <= signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs)
             return null;
-        return this.unresolved(signal, 'EXPIRY_TIMEOUT', nowMs, null);
+        return this.unresolved(signal, reason, nowMs, null);
     }
     unresolved(signal, reason, evaluatedAt, tick) {
         return {

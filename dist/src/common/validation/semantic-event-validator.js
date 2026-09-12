@@ -4,6 +4,11 @@ function isRecord(value) {
 function isSourceQuality(value) {
     return value === 'VERIFIED' || value === 'INFERRED' || value === 'UNKNOWN';
 }
+function validVerificationPair(quality, verificationId) {
+    if (quality === 'VERIFIED')
+        return typeof verificationId === 'string' && verificationId.length > 0;
+    return verificationId === null;
+}
 export function isSemanticPriceEvent(value) {
     if (!isRecord(value) || value.type !== 'SEMANTIC_PRICE')
         return false;
@@ -16,6 +21,8 @@ export function isSemanticPriceEvent(value) {
     if (value.sourceTimestampEpochMs !== null && (typeof value.sourceTimestampEpochMs !== 'number' || !Number.isFinite(value.sourceTimestampEpochMs)))
         return false;
     if (typeof value.sourceClockSynchronized !== 'boolean' || !isSourceQuality(value.sourceQuality))
+        return false;
+    if (!validVerificationPair(value.sourceQuality, value.protocolVerificationId))
         return false;
     if (typeof value.receivedAtEpochMs !== 'number' || !Number.isFinite(value.receivedAtEpochMs))
         return false;
@@ -47,10 +54,11 @@ export function isSemanticPayoutEvent(value) {
     if (!isRecord(value.payoutSnapshot))
         return false;
     const payout = value.payoutSnapshot;
-    return payout.payoutSnapshotSchemaVersion === '2'
+    return payout.payoutSnapshotSchemaVersion === '3'
         && typeof payout.canonicalAssetId === 'string'
         && payout.canonicalAssetId.length > 0
         && payout.expirationSeconds === null
+        && payout.expirationBinding === 'UNBOUND'
         && typeof payout.payoutRate === 'number'
         && Number.isFinite(payout.payoutRate)
         && payout.payoutRate >= 0
@@ -59,6 +67,7 @@ export function isSemanticPayoutEvent(value) {
         && Number.isFinite(payout.capturedAt)
         && payout.source === 'PLATFORM_PROTOCOL'
         && isSourceQuality(payout.quality)
+        && validVerificationPair(payout.quality, payout.protocolVerificationId)
         && typeof payout.feedId === 'string'
         && payout.feedId.endsWith('.po.market')
         && typeof payout.parserSchemaId === 'string'

@@ -1,15 +1,17 @@
 import { canonicalEntityHash } from '../../../common/hashing/canonical-hash.js';
 function unknownPayout(decision, capturedAt) {
     return {
-        payoutSnapshotSchemaVersion: '2',
+        payoutSnapshotSchemaVersion: '3',
         canonicalAssetId: decision.canonicalAssetId,
         expirationSeconds: null,
+        expirationBinding: 'UNBOUND',
         payoutRate: null,
         capturedAt,
         source: 'UNKNOWN',
         quality: 'UNKNOWN',
         feedId: null,
         parserSchemaId: null,
+        protocolVerificationId: null,
     };
 }
 export class EntryResolver {
@@ -27,7 +29,7 @@ export class EntryResolver {
         }
         if (tick.marketSourceIdentity.canonicalAssetId !== decision.canonicalAssetId)
             return null;
-        if (tick.integrity !== 'VALID')
+        if (tick.integrity !== 'VALID' || tick.sourceQuality !== 'VERIFIED' || tick.protocolVerificationId === null)
             return null;
         const entryPayload = {
             decisionId: decision.decisionId,
@@ -84,12 +86,12 @@ export class EntryResolver {
         };
         return { entry, signal };
     }
-    timeout(decision, nowMs) {
+    timeout(decision, nowMs, reason = 'ENTRY_TIMEOUT') {
         if ((decision.finalDecision !== 'CALL' && decision.finalDecision !== 'PUT') || decision.alertPublishedAt === null)
             return null;
         if (nowMs <= decision.alertPublishedAt + this.maxEntryResolutionDelayMs)
             return null;
-        return this.unresolved(decision, 'ENTRY_TIMEOUT', nowMs);
+        return this.unresolved(decision, reason, nowMs);
     }
     unresolved(decision, reason, resolvedAt) {
         return {

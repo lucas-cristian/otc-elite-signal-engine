@@ -1,5 +1,6 @@
 import { canonicalEntityHash, canonicalJson } from '../../common/hashing/canonical-hash.js';
 import { sha256 } from '../../common/hashing/sha256.js';
+import { PROTOCOL_VERIFICATION_REGISTRY_VERSION } from '../../common/protocol/protocol-verification-registry.js';
 export class DatasetExporter {
     journal;
     constructor(journal) {
@@ -19,14 +20,23 @@ export class DatasetExporter {
         };
         const checksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
         const configHashes = [...new Set(snapshot.decisions.map((decision) => decision.configHash))].sort();
+        const protocolVerificationIds = [...new Set([
+                ...snapshot.ticks.flatMap((tick) => tick.protocolVerificationId === null ? [] : [tick.protocolVerificationId]),
+                ...snapshot.payoutSnapshots.flatMap((payout) => payout.protocolVerificationId === null ? [] : [payout.protocolVerificationId]),
+            ])].sort();
         const manifestBase = {
-            datasetSchemaVersion: '2',
+            datasetSchemaVersion: '3',
             createdAt: metadata.createdAt,
             appVersion: metadata.appVersion,
             buildId: metadata.buildId,
             sourceTreeSha256: metadata.sourceTreeSha256,
             gitCommit: metadata.gitCommit,
             gitWorkingTreeClean: metadata.gitWorkingTreeClean,
+            protocolRegistryVersion: PROTOCOL_VERIFICATION_REGISTRY_VERSION,
+            protocolVerificationIds,
+            exportOperationalDataState: metadata.operationalHealth.state,
+            exportOperationalDataReason: metadata.operationalHealth.reason,
+            latestTickAgeMsAtExport: metadata.operationalHealth.latestTickAgeMs,
             tickCount: snapshot.ticks.length,
             decisionCount: snapshot.decisions.length,
             signalCount: snapshot.signals.length,
@@ -36,7 +46,7 @@ export class DatasetExporter {
         };
         const manifest = {
             ...manifestBase,
-            datasetId: canonicalEntityHash('DATASET', 2, manifestBase),
+            datasetId: canonicalEntityHash('DATASET', 3, manifestBase),
         };
         return { manifest, ...body };
     }

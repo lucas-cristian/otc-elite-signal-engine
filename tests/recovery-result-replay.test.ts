@@ -16,10 +16,10 @@ const source: MarketSourceIdentity = {
 
 function decision(): DecisionRecord {
   return {
-    decisionSchemaVersion: '2', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe: '5s',
+    decisionSchemaVersion: '3', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe: '5s',
     decisionComputedAt: 1000, decisionPublishedAt: 1000, alertPublishedAt: 1000, evaluationWindowId: 'e1', candleStartTimestamp: 0,
     candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.8, calibratedProbability: null, structureRegime: 'TREND_UP', volatilityRegime: 'NORMAL',
-    strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
+    strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
     expirationSeconds: 60, configHash: 'cfg', configSnapshot: {}, appVersion: '1', marketEpisodeId: null, createdAt: 1000,
   };
 }
@@ -29,17 +29,17 @@ function signal(): SignalRecord {
     signalSchemaVersion: '2', signalId: 's1', signalFingerprint: 'f1', decisionId: 'd1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', direction: 'CALL',
     referenceEntryPrice: 10, referenceEntryTimestamp: 1000, expirationSeconds: 60, expectedExpiryTimestamp: 61_000, entryMarketSourceIdentity: source,
     entryPageSessionId: 'page-a', payoutSnapshot: {
-      payoutSnapshotSchemaVersion: '2', canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, payoutRate: 0.8, capturedAt: 900,
-      source: 'PLATFORM_PROTOCOL', quality: 'VERIFIED', feedId: 'demo-api-eu.po.market', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1',
+      payoutSnapshotSchemaVersion: '3', canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, expirationBinding: 'UNBOUND', payoutRate: 0.8, capturedAt: 900,
+      source: 'PLATFORM_PROTOCOL', quality: 'VERIFIED', feedId: 'demo-api-eu.po.market', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1', protocolVerificationId: 'TEST_VERIFIED_PAYOUT',
     }, signalCreatedAt: 1000,
   };
 }
 
 function tick(ts: number, price: number, seq: number, identity = source): Tick {
   return {
-    tickSchemaVersion: '3', tickId: `tick-${seq}`, marketSourceIdentity: identity, pageSessionId: 'page-a', connectionId: 'c1', sequence: seq,
+    tickSchemaVersion: '4', tickId: `tick-${seq}`, marketSourceIdentity: identity, pageSessionId: 'page-a', connectionId: 'c1', sequence: seq,
     sourceTimestampEpochMs: ts + 7_200_000, receivedAtEpochMs: ts, receivedAtMonotonicMs: seq, eventTimestampEpochMs: ts, timestampBasis: 'LOCAL_RECEIPT',
-    sourceClockSynchronized: false, observedTimestampDeltaMs: -7_200_000, transportLatencyMs: null, price, integrity: 'VALID', sourceQuality: 'VERIFIED',
+    sourceClockSynchronized: false, observedTimestampDeltaMs: -7_200_000, transportLatencyMs: null, price, integrity: 'VALID', sourceQuality: 'VERIFIED', protocolVerificationId: 'TEST_VERIFIED_STREAM',
   };
 }
 
@@ -77,11 +77,11 @@ test('economic evaluation fails closed when payout expiration is unknown or mism
   assert.equal(unknownExpiration.directionalOutcome, 'CORRECT');
   assert.equal(unknownExpiration.economicOutcome, 'UNKNOWN');
   assert.equal(unknownExpiration.economicReturn, null);
-  assert.equal(unknownExpiration.economicEvaluationReason, 'PAYOUT_EXPIRATION_UNKNOWN');
+  assert.equal(unknownExpiration.economicEvaluationReason, 'PAYOUT_EXPIRATION_UNBOUND');
 
   const mismatchedSignal: SignalRecord = {
     ...signal(),
-    payoutSnapshot: { ...signal().payoutSnapshot, expirationSeconds: 30 },
+    payoutSnapshot: { ...signal().payoutSnapshot, expirationSeconds: 30, expirationBinding: 'EXPLICIT_PROTOCOL' },
   };
   const mismatched = engine.evaluateFromTick(mismatchedSignal, tick(61_000, 9, 3));
   assert.ok(mismatched && mismatched.resolutionStatus === 'RESOLVED');
@@ -95,7 +95,7 @@ test('economic evaluation is descriptive only when verified payout matches signa
   const engine = new ResultEngine(5000);
   const eligibleSignal: SignalRecord = {
     ...signal(),
-    payoutSnapshot: { ...signal().payoutSnapshot, expirationSeconds: 60, payoutRate: 0.8, quality: 'VERIFIED' },
+    payoutSnapshot: { ...signal().payoutSnapshot, expirationSeconds: 60, expirationBinding: 'EXPLICIT_PROTOCOL', payoutRate: 0.8, quality: 'VERIFIED' },
   };
   const win = engine.evaluateFromTick(eligibleSignal, tick(61_000, 11, 4));
   assert.ok(win && win.resolutionStatus === 'RESOLVED');
@@ -117,8 +117,8 @@ test('replay interleaves payout events and ticks through the same quantitative p
   await pipeline.initialize(1_700_000_000_000);
   const start = 1_700_000_000_000;
   const payout = {
-    payoutSnapshotSchemaVersion: '2' as const, canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, payoutRate: 0.8, capturedAt: start,
-    source: 'PLATFORM_PROTOCOL' as const, quality: 'VERIFIED' as const, feedId: 'demo-api-eu.po.market', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1',
+    payoutSnapshotSchemaVersion: '3' as const, canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, expirationBinding: 'UNBOUND' as const, payoutRate: 0.8, capturedAt: start,
+    source: 'PLATFORM_PROTOCOL' as const, quality: 'VERIFIED' as const, feedId: 'demo-api-eu.po.market', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1', protocolVerificationId: 'TEST_VERIFIED_PAYOUT',
   };
   await pipeline.enqueuePayout(payout);
   for (let index = 0; index < 150; index++) {
@@ -128,7 +128,9 @@ test('replay interleaves payout events and ticks through the same quantitative p
   }
   await pipeline.drain();
   const exporter = new DatasetExporter(journal);
-  const dataset = await exporter.create({ appVersion: '1.3.0', buildId: 'test', sourceTreeSha256: 'source-hash', gitCommit: null, gitWorkingTreeClean: null, createdAt: start + 200_000 });
+  const createdAt = start + 200_000;
+  await pipeline.finalizeThrough(createdAt);
+  const dataset = await exporter.create({ appVersion: '1.4.0', buildId: 'test', sourceTreeSha256: 'source-hash', gitCommit: null, gitWorkingTreeClean: null, createdAt, operationalHealth: pipeline.getOperationalHealth(createdAt) });
   assert.ok(dataset.decisions.length > 0);
   assert.equal(dataset.payoutSnapshots.length, 1);
   const replay = await new ReplayEngine().replay(dataset, config);

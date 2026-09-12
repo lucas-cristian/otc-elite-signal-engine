@@ -4,8 +4,8 @@ import type { ScientificDataset } from '../../common/models/dataset-types.js';
 import type { PayoutSnapshot, Tick } from '../../common/models/types.js';
 import type { QuantPipelineConfig } from '../core/quant-pipeline.js';
 import { QuantPipeline } from '../core/quant-pipeline.js';
-import { MemoryJournal } from '../storage/memory-journal.js';
 import { DatasetExporter } from '../export/dataset-exporter.js';
+import { MemoryJournal } from '../storage/memory-journal.js';
 
 type ReplayItem =
   | { type: 'PAYOUT'; timestamp: number; payout: PayoutSnapshot }
@@ -28,6 +28,7 @@ export class ReplayEngine {
     }
     await pipeline.drain();
     await pipeline.finalizeThrough(dataset.manifest.createdAt);
+    const operationalHealth = pipeline.getOperationalHealth(dataset.manifest.createdAt);
     return new DatasetExporter(journal).create({
       appVersion: dataset.manifest.appVersion,
       buildId: `${dataset.manifest.buildId}:replay`,
@@ -35,6 +36,7 @@ export class ReplayEngine {
       gitCommit: dataset.manifest.gitCommit,
       gitWorkingTreeClean: dataset.manifest.gitWorkingTreeClean ?? null,
       createdAt: dataset.manifest.createdAt,
+      operationalHealth,
     });
   }
 

@@ -2,8 +2,10 @@ import { isSemanticPayoutEvent, isSemanticPriceEvent } from '../../common/valida
 import { createValidatedTick } from '../../common/validation/tick-factory.js';
 import { computeAnalytics } from '../evaluation/analytics.js';
 import { DatasetExporter } from '../export/dataset-exporter.js';
-import { QuantPipeline, DEFAULT_PIPELINE_CONFIG } from './quant-pipeline.js';
 import { IndexedDbJournal, openJournalDatabase } from '../storage/indexeddb-journal.js';
+import { DEFAULT_PIPELINE_CONFIG, QuantPipeline } from './quant-pipeline.js';
+const WATCHDOG_ALARM_NAME = 'otc-elite-data-health-watchdog';
+const WATCHDOG_PERIOD_MINUTES = 0.5;
 const discoveryRing = [];
 function isRecord(value) {
     return typeof value === 'object' && value !== null;
@@ -45,8 +47,14 @@ const runtime = (async () => {
     const journal = new IndexedDbJournal(db);
     const pipeline = new QuantPipeline(journal, { ...DEFAULT_PIPELINE_CONFIG, appVersion: buildMetadata.appVersion });
     await pipeline.initialize(Date.now());
+    chrome.alarms.create(WATCHDOG_ALARM_NAME, { periodInMinutes: WATCHDOG_PERIOD_MINUTES });
     return { journal, pipeline, buildMetadata };
 })();
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name !== WATCHDOG_ALARM_NAME)
+        return;
+    void runtime.then(({ pipeline }) => pipeline.watchdog(Date.now())).catch(() => undefined);
+});
 function isDiscoveryObservation(value) {
     if (!isRecord(value))
         return false;
@@ -95,16 +103,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return;
     }
     if (message.type === 'GET_ANALYTICS') {
-        void runtime.then(async ({ journal }) => sendResponse(computeAnalytics(await journal.snapshot(), Date.now())))
-            .catch((error) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
+        void runtime.then(async ({ journal, pipeline }) => {
+            const nowMs = Date.now();
+            await pipeline.watchdog(nowMs);
+            const [snapshot, health] = await Promise.all([
+                journal.snapshot(),
+                Promise.resolve(pipeline.getOperationalHealth(nowMs)),
+            ]);
+            sendResponse(computeAnalytics(snapshot, health));
+        }).catch((error) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
         return true;
     }
     if (message.type === 'EXPORT_DATASET_JSON') {
         void runtime.then(async ({ journal, pipeline, buildMetadata }) => {
-            await pipeline.drain();
-            await pipeline.finalizeThrough(Date.now());
+            const createdAt = Date.now();
+            await pipeline.finalizeThrough(createdAt);
+            const operationalHealth = pipeline.getOperationalHealth(createdAt);
             const exporter = new DatasetExporter(journal);
-            const dataset = await exporter.create({ ...buildMetadata, createdAt: Date.now() });
+            const dataset = await exporter.create({ ...buildMetadata, createdAt, operationalHealth });
             sendResponse({ filename: `otc-elite-dataset-${dataset.manifest.datasetId.slice(0, 12)}.json`, json: JSON.stringify(dataset, null, 2) });
         }).catch((error) => sendResponse({ error: error instanceof Error ? error.message : 'export failure' }));
         return true;

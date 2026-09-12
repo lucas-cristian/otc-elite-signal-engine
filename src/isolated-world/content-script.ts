@@ -35,6 +35,8 @@ function otcIsSemanticPriceEvent(value: unknown): value is Record<string, unknow
   if (typeof value.receivedAtEpochMs !== 'number' || typeof value.receivedAtMonotonicMs !== 'number') return false;
   if (typeof value.sourceClockSynchronized !== 'boolean') return false;
   if (value.sourceQuality !== 'VERIFIED' && value.sourceQuality !== 'INFERRED' && value.sourceQuality !== 'UNKNOWN') return false;
+  if (value.sourceQuality === 'VERIFIED' && (typeof value.protocolVerificationId !== 'string' || value.protocolVerificationId.length === 0)) return false;
+  if (value.sourceQuality !== 'VERIFIED' && value.protocolVerificationId !== null) return false;
   if (!otcIsRecord(value.identity)) return false;
   return value.identity.platform === 'POCKET_OPTION'
     && value.identity.marketType === 'OTC'
@@ -49,15 +51,18 @@ function otcIsSemanticPayoutEvent(value: unknown): value is Record<string, unkno
   if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PAYOUT' || !otcHasSemanticEnvelope(value)) return false;
   if (!otcIsRecord(value.payoutSnapshot)) return false;
   const payout = value.payoutSnapshot;
-  return payout.payoutSnapshotSchemaVersion === '2'
+  return payout.payoutSnapshotSchemaVersion === '3'
     && typeof payout.canonicalAssetId === 'string'
+    && payout.expirationBinding === 'UNBOUND'
     && typeof payout.payoutRate === 'number'
     && Number.isFinite(payout.payoutRate)
     && payout.payoutRate >= 0
     && payout.payoutRate <= 1
     && typeof payout.capturedAt === 'number'
     && typeof payout.feedId === 'string'
-    && typeof payout.parserSchemaId === 'string';
+    && typeof payout.parserSchemaId === 'string'
+    && ((payout.quality === 'VERIFIED' && typeof payout.protocolVerificationId === 'string' && payout.protocolVerificationId.length > 0)
+      || (payout.quality !== 'VERIFIED' && payout.protocolVerificationId === null));
 }
 
 function otcScheduleFlush(): void {

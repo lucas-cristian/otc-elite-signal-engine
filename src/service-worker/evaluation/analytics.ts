@@ -1,6 +1,8 @@
-import type { JournalSnapshot } from '../storage/journal-repository.js';
-import type { SourceQuality, StructureRegime, Timeframe, VolatilityRegime } from '../../common/models/types.js';
 import type { FinalDecision } from '../../common/models/journal-types.js';
+import type { OperationalDataState, SourceQuality, StructureRegime, Timeframe, VolatilityRegime } from '../../common/models/types.js';
+import { PROTOCOL_VERIFICATION_REGISTRY_VERSION } from '../../common/protocol/protocol-verification-registry.js';
+import type { OperationalHealthSnapshot } from '../core/data-health.js';
+import type { JournalSnapshot } from '../storage/journal-repository.js';
 
 export interface AnalyticsSnapshot {
   tickCount: number;
@@ -36,16 +38,26 @@ export interface AnalyticsSnapshot {
   latestTickReceivedAt: number | null;
   latestTickAgeMs: number | null;
   latestSourceQuality: SourceQuality | null;
+  latestProtocolVerificationId: string | null;
+  protocolRegistryVersion: string;
   latestTickIntegrity: 'VALID' | 'SUSPECT' | 'INVALID' | null;
   latestPayoutRate: number | null;
   latestPayoutExpirationSeconds: number | null;
+  latestPayoutExpirationBinding: string | null;
   latestPayoutQuality: SourceQuality | null;
+  latestPayoutProtocolVerificationId: string | null;
   latestPayoutCapturedAt: number | null;
   latestDecision: FinalDecision | null;
   latestDecisionTimeframe: Timeframe | null;
   latestStructureRegime: StructureRegime | null;
   latestVolatilityRegime: VolatilityRegime | null;
-  latestOperationalDataState: string | null;
+  latestDecisionOperationalDataState: OperationalDataState | null;
+  currentOperationalDataState: OperationalDataState;
+  currentOperationalDataReason: string;
+  watchdogAssessedAt: number;
+  healthDegradedAfterMs: number;
+  healthStaleAfterMs: number;
+  healthDataUnavailableAfterMs: number;
   latestModelScore: number | null;
   latestBlockers: string[];
 }
@@ -60,7 +72,7 @@ function wilson(successes: number, total: number, z = 1.96): [number, number] | 
   return [Math.max(0, center - margin), Math.min(1, center + margin)];
 }
 
-export function computeAnalytics(snapshot: JournalSnapshot, nowMs = Date.now()): AnalyticsSnapshot {
+export function computeAnalytics(snapshot: JournalSnapshot, health: OperationalHealthSnapshot): AnalyticsSnapshot {
   const callPutDecisions = snapshot.decisions.filter((decision) => decision.finalDecision === 'CALL' || decision.finalDecision === 'PUT');
   const callPutDecisionCount = callPutDecisions.length;
   const entryResolvedCount = snapshot.entryResolutions.filter((entry) => entry.resolutionStatus === 'RESOLVED').length;
@@ -80,13 +92,22 @@ export function computeAnalytics(snapshot: JournalSnapshot, nowMs = Date.now()):
   const inferredSettlementCount = resolved.filter((result) => result.settlementMetadata.confidence === 'INFERRED').length;
   const unknownSettlementCount = snapshot.results.length - verifiedSettlementCount - inferredSettlementCount;
 
-  const latestTick = snapshot.ticks.reduce((latest, tick) => latest === null || tick.receivedAtEpochMs > latest.receivedAtEpochMs ? tick : latest, snapshot.ticks[0] ?? null);
-  const latestDecision = snapshot.decisions.reduce((latest, decision) => latest === null || decision.decisionComputedAt > latest.decisionComputedAt ? decision : latest, snapshot.decisions[0] ?? null);
+  const latestTick = snapshot.ticks.reduce(
+    (latest, tick) => latest === null || tick.receivedAtEpochMs > latest.receivedAtEpochMs ? tick : latest,
+    null as typeof snapshot.ticks[number] | null,
+  );
+  const latestDecision = snapshot.decisions.reduce(
+    (latest, decision) => latest === null || decision.decisionComputedAt > latest.decisionComputedAt ? decision : latest,
+    null as typeof snapshot.decisions[number] | null,
+  );
   const latestPayout = latestTick === null
     ? null
     : snapshot.payoutSnapshots
       .filter((payout) => payout.canonicalAssetId === latestTick.marketSourceIdentity.canonicalAssetId && payout.feedId === latestTick.marketSourceIdentity.feedId)
-      .reduce((latest, payout) => latest === null || payout.capturedAt > latest.capturedAt ? payout : latest, null as typeof snapshot.payoutSnapshots[number] | null);
+      .reduce(
+        (latest, payout) => latest === null || payout.capturedAt > latest.capturedAt ? payout : latest,
+        null as typeof snapshot.payoutSnapshots[number] | null,
+      );
 
   return {
     tickCount: snapshot.ticks.length,
@@ -120,18 +141,28 @@ export function computeAnalytics(snapshot: JournalSnapshot, nowMs = Date.now()):
     currentFeedId: latestTick?.marketSourceIdentity.feedId ?? null,
     latestPrice: latestTick?.price ?? null,
     latestTickReceivedAt: latestTick?.receivedAtEpochMs ?? null,
-    latestTickAgeMs: latestTick === null ? null : Math.max(0, nowMs - latestTick.receivedAtEpochMs),
+    latestTickAgeMs: health.latestTickAgeMs,
     latestSourceQuality: latestTick?.sourceQuality ?? null,
+    latestProtocolVerificationId: latestTick?.protocolVerificationId ?? null,
+    protocolRegistryVersion: PROTOCOL_VERIFICATION_REGISTRY_VERSION,
     latestTickIntegrity: latestTick?.integrity ?? null,
     latestPayoutRate: latestPayout?.payoutRate ?? null,
     latestPayoutExpirationSeconds: latestPayout?.expirationSeconds ?? null,
+    latestPayoutExpirationBinding: latestPayout?.expirationBinding ?? null,
     latestPayoutQuality: latestPayout?.quality ?? null,
+    latestPayoutProtocolVerificationId: latestPayout?.protocolVerificationId ?? null,
     latestPayoutCapturedAt: latestPayout?.capturedAt ?? null,
     latestDecision: latestDecision?.finalDecision ?? null,
     latestDecisionTimeframe: latestDecision?.timeframe ?? null,
     latestStructureRegime: latestDecision?.structureRegime ?? null,
     latestVolatilityRegime: latestDecision?.volatilityRegime ?? null,
-    latestOperationalDataState: latestDecision?.operationalDataState ?? null,
+    latestDecisionOperationalDataState: latestDecision?.operationalDataState ?? null,
+    currentOperationalDataState: health.state,
+    currentOperationalDataReason: health.reason,
+    watchdogAssessedAt: health.assessedAt,
+    healthDegradedAfterMs: health.thresholds.degradedAfterMs,
+    healthStaleAfterMs: health.thresholds.staleAfterMs,
+    healthDataUnavailableAfterMs: health.thresholds.dataUnavailableAfterMs,
     latestModelScore: latestDecision?.modelScore ?? null,
     latestBlockers: latestDecision?.blockers ?? [],
   };

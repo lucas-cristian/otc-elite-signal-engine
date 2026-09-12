@@ -12,6 +12,7 @@ export interface SemanticPriceEvent {
   sourceTimestampEpochMs: number | null;
   sourceClockSynchronized: boolean;
   sourceQuality: SourceQuality;
+  protocolVerificationId: string | null;
   receivedAtEpochMs: number;
   receivedAtMonotonicMs: number;
 }

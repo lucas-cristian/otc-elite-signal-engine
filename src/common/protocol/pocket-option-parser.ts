@@ -1,6 +1,11 @@
 import { getCanonicalAssetId } from '../hashing/canonical-hash.js';
-import type { MarketSourceIdentity, PayoutSnapshot, SourceQuality } from '../models/types.js';
+import type { MarketSourceIdentity, PayoutSnapshot } from '../models/types.js';
 import type { SemanticMarketEvent, SemanticPayoutEvent, SemanticPriceEvent } from './market-events.js';
+import {
+  POCKET_OPTION_PAYOUT_SCHEMA_ID,
+  POCKET_OPTION_STREAM_SCHEMA_ID,
+  resolveProtocolVerification,
+} from './protocol-verification-registry.js';
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -20,10 +25,6 @@ interface EventContext extends FrameTiming {
   connectionId: string;
   endpointUrl: string;
 }
-
-const VERIFIED_DEMO_HOSTS = new Set(['demo-api-eu.po.market']);
-const STREAM_SCHEMA_ID = 'POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1';
-const PAYOUT_SCHEMA_ID = 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1';
 
 function parseJsonValue(text: string): JsonValue | null {
   try {
@@ -51,11 +52,6 @@ function endpointHost(endpointUrl: string): string | null {
 
 function isPocketOptionMarketHost(host: string | null): boolean {
   return host !== null && (host === 'po.market' || host.endsWith('.po.market'));
-}
-
-function schemaQuality(endpointUrl: string): SourceQuality {
-  const host = endpointHost(endpointUrl);
-  return host !== null && VERIFIED_DEMO_HOSTS.has(host) ? 'VERIFIED' : 'INFERRED';
 }
 
 function isOtcAsset(asset: string): boolean {
@@ -103,7 +99,16 @@ function parseBinaryHeader(text: string): BinaryEventHeader | null {
 
 function parseUpdateStream(payload: JsonValue, context: EventContext): Omit<SemanticPriceEvent, 'sequence'>[] {
   if (!Array.isArray(payload) || payload.length === 0) return [];
-  const quality = schemaQuality(context.endpointUrl);
+  const host = endpointHost(context.endpointUrl);
+  if (!host || !isPocketOptionMarketHost(host)) return [];
+  const verification = resolveProtocolVerification({
+    feedHost: host,
+    eventKind: 'PRICE_STREAM',
+    socketIoEventName: 'updateStream',
+    parserSchemaId: POCKET_OPTION_STREAM_SCHEMA_ID,
+    payloadShapeId: 'OTC_STREAM_TRIPLE_V1',
+    marketType: 'OTC',
+  });
   const events: Omit<SemanticPriceEvent, 'sequence'>[] = [];
   for (const row of payload) {
     if (!Array.isArray(row) || row.length !== 3) return [];
@@ -112,7 +117,7 @@ function parseUpdateStream(payload: JsonValue, context: EventContext): Omit<Sema
     const price = finiteNumber(row[2]);
     if (!asset || timestampSeconds === null || price === null || price <= 0) return [];
     if (!isOtcAsset(asset)) continue;
-    const marketIdentity = identity(asset, context.endpointUrl, STREAM_SCHEMA_ID);
+    const marketIdentity = identity(asset, context.endpointUrl, POCKET_OPTION_STREAM_SCHEMA_ID);
     if (!marketIdentity) return [];
     const sourceTimestampEpochMs = plausibleSourceTimestampMs(timestampSeconds * 1000, context.receivedAtEpochMs);
     if (sourceTimestampEpochMs === null) return [];
@@ -123,7 +128,8 @@ function parseUpdateStream(payload: JsonValue, context: EventContext): Omit<Sema
       price,
       sourceTimestampEpochMs,
       sourceClockSynchronized: false,
-      sourceQuality: quality,
+      sourceQuality: verification.quality,
+      protocolVerificationId: verification.verificationId,
       receivedAtEpochMs: context.receivedAtEpochMs,
       receivedAtMonotonicMs: context.receivedAtMonotonicMs,
     });
@@ -135,7 +141,14 @@ function parseChafor(payload: JsonValue, context: EventContext): Omit<SemanticPa
   if (!Array.isArray(payload) || payload.length === 0) return [];
   const host = endpointHost(context.endpointUrl);
   if (!host || !isPocketOptionMarketHost(host)) return [];
-  const quality = schemaQuality(context.endpointUrl);
+  const verification = resolveProtocolVerification({
+    feedHost: host,
+    eventKind: 'PAYOUT',
+    socketIoEventName: 'chafor',
+    parserSchemaId: POCKET_OPTION_PAYOUT_SCHEMA_ID,
+    payloadShapeId: 'OTC_PAYOUT_PAIR_V1',
+    marketType: 'OTC',
+  });
   const events: Omit<SemanticPayoutEvent, 'sequence'>[] = [];
   for (const row of payload) {
     if (!Array.isArray(row) || row.length !== 2) return [];
@@ -143,17 +156,18 @@ function parseChafor(payload: JsonValue, context: EventContext): Omit<SemanticPa
     const payoutPercent = finiteNumber(row[1]);
     if (!asset || payoutPercent === null || payoutPercent < 0 || payoutPercent > 100) return [];
     if (!isOtcAsset(asset)) continue;
-    const canonicalAssetId = getCanonicalAssetId(asset);
     const payoutSnapshot: PayoutSnapshot = {
-      payoutSnapshotSchemaVersion: '2',
-      canonicalAssetId,
+      payoutSnapshotSchemaVersion: '3',
+      canonicalAssetId: getCanonicalAssetId(asset),
       expirationSeconds: null,
+      expirationBinding: 'UNBOUND',
       payoutRate: payoutPercent / 100,
       capturedAt: context.receivedAtEpochMs,
       source: 'PLATFORM_PROTOCOL',
-      quality,
+      quality: verification.quality,
       feedId: host,
-      parserSchemaId: PAYOUT_SCHEMA_ID,
+      parserSchemaId: POCKET_OPTION_PAYOUT_SCHEMA_ID,
+      protocolVerificationId: verification.verificationId,
     };
     events.push({ type: 'SEMANTIC_PAYOUT', connectionId: context.connectionId, payoutSnapshot });
   }
@@ -165,8 +179,7 @@ function parseVerifiedAttachment(eventName: string, text: string, context: Event
   if (eventName !== 'updateStream' && eventName !== 'chafor') return [];
   const payload = parseJsonValue(text);
   if (payload === null) return [];
-  if (eventName === 'updateStream') return parseUpdateStream(payload, context);
-  return parseChafor(payload, context);
+  return eventName === 'updateStream' ? parseUpdateStream(payload, context) : parseChafor(payload, context);
 }
 
 async function binaryText(data: unknown): Promise<string | null> {

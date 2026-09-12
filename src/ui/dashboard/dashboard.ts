@@ -27,16 +27,26 @@ interface AnalyticsResponse {
   latestTickReceivedAt?: number | null;
   latestTickAgeMs?: number | null;
   latestSourceQuality?: string | null;
+  latestProtocolVerificationId?: string | null;
+  protocolRegistryVersion?: string;
   latestTickIntegrity?: string | null;
   latestPayoutRate?: number | null;
   latestPayoutExpirationSeconds?: number | null;
+  latestPayoutExpirationBinding?: string | null;
   latestPayoutQuality?: string | null;
+  latestPayoutProtocolVerificationId?: string | null;
   latestPayoutCapturedAt?: number | null;
   latestDecision?: string | null;
   latestDecisionTimeframe?: string | null;
   latestStructureRegime?: string | null;
   latestVolatilityRegime?: string | null;
-  latestOperationalDataState?: string | null;
+  latestDecisionOperationalDataState?: string | null;
+  currentOperationalDataState?: string;
+  currentOperationalDataReason?: string;
+  watchdogAssessedAt?: number;
+  healthDegradedAfterMs?: number;
+  healthStaleAfterMs?: number;
+  healthDataUnavailableAfterMs?: number;
   latestModelScore?: number | null;
   latestBlockers?: string[];
   error?: string;
@@ -99,7 +109,17 @@ async function load(): Promise<void> {
       `Latest tick received: ${timestamp(response.latestTickReceivedAt)}`,
       `Latest tick age: ${age(response.latestTickAgeMs)}`,
       `Source quality: ${response.latestSourceQuality ?? 'N/A'}`,
+      `Protocol verification: ${response.latestProtocolVerificationId ?? 'UNVERIFIED'}`,
+      `Protocol registry: ${response.protocolRegistryVersion ?? 'N/A'}`,
       `Tick integrity: ${response.latestTickIntegrity ?? 'N/A'}`,
+      '',
+      'LIVE DATA HEALTH WATCHDOG',
+      `Current operational state: ${response.currentOperationalDataState ?? 'N/A'}`,
+      `Reason: ${response.currentOperationalDataReason ?? 'N/A'}`,
+      `Watchdog assessed: ${timestamp(response.watchdogAssessedAt)}`,
+      `Degraded after: ${age(response.healthDegradedAfterMs)}`,
+      `Stale after: ${age(response.healthStaleAfterMs)}`,
+      `Data unavailable after: ${age(response.healthDataUnavailableAfterMs)}`,
       '',
       'DECISION PIPELINE',
       `Decisions: ${response.decisionCount ?? 0}`,
@@ -115,7 +135,7 @@ async function load(): Promise<void> {
       `Latest model score: ${number(response.latestModelScore, 4)}`,
       `Structure regime: ${response.latestStructureRegime ?? 'N/A'}`,
       `Volatility regime: ${response.latestVolatilityRegime ?? 'N/A'}`,
-      `Operational data state: ${response.latestOperationalDataState ?? 'N/A'}`,
+      `Decision-time data state: ${response.latestDecisionOperationalDataState ?? 'N/A'}`,
       `Latest blockers: ${blockers}`,
       '',
       'REFERENCE DIRECTIONAL EVALUATION',
@@ -126,7 +146,9 @@ async function load(): Promise<void> {
       'ECONOMIC EVALUATION (FAIL-CLOSED)',
       `Latest payout: ${payout(response.latestPayoutRate)}`,
       `Payout expiration: ${payoutExpiration}`,
+      `Payout expiration binding: ${response.latestPayoutExpirationBinding ?? 'N/A'}`,
       `Payout quality: ${response.latestPayoutQuality ?? 'N/A'}`,
+      `Payout verification: ${response.latestPayoutProtocolVerificationId ?? 'UNVERIFIED'}`,
       `Payout captured: ${timestamp(response.latestPayoutCapturedAt)}`,
       `Economic eligible sample: ${response.economicSampleSize ?? 0}`,
       `Economic ineligible resolved: ${response.economicIneligibleResolvedCount ?? 0}`,

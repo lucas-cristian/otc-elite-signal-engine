@@ -17,4 +17,21 @@ declare namespace chrome {
     }
     const local: StorageArea;
   }
+  namespace alarms {
+    interface Alarm {
+      name: string;
+      scheduledTime: number;
+      periodInMinutes?: number;
+    }
+    interface AlarmCreateInfo {
+      delayInMinutes?: number;
+      periodInMinutes?: number;
+      when?: number;
+    }
+    interface AlarmEvent {
+      addListener(callback: (alarm: Alarm) => void): void;
+    }
+    const onAlarm: AlarmEvent;
+    function create(name: string, alarmInfo: AlarmCreateInfo): void;
+  }
 }

@@ -29,6 +29,7 @@ export interface DecisionInput {
   eventIntegrity: EventIntegrity;
   operationalDataState: OperationalDataState;
   sourceQuality: SourceQuality;
+  sourceProtocolVerificationId: string | null;
 }
 
 export class DecisionEngine {
@@ -42,7 +43,7 @@ export class DecisionEngine {
     const blockers: string[] = [];
     if (input.features === null) blockers.push('CORE_WARMUP');
     if (input.eventIntegrity !== 'VALID') blockers.push('EVENT_INTEGRITY');
-    if (input.sourceQuality !== 'VERIFIED') blockers.push('UNVERIFIED_SOURCE_SCHEMA');
+    if (input.sourceQuality !== 'VERIFIED' || input.sourceProtocolVerificationId === null) blockers.push('UNVERIFIED_SOURCE_SCHEMA');
     if (input.operationalDataState !== 'HEALTHY') blockers.push(`DATA_STATE_${input.operationalDataState}`);
     if (input.regime.structure === 'CHAOTIC') blockers.push('CHAOTIC_REGIME');
     if (input.regime.structure === 'UNKNOWN' || input.regime.volatility === 'UNKNOWN') blockers.push('UNKNOWN_REGIME');
@@ -70,7 +71,7 @@ export class DecisionEngine {
     });
     const publishedAt = input.computedAt;
     return {
-      decisionSchemaVersion: '2',
+      decisionSchemaVersion: '3',
       decisionId,
       decisionGranularityKey,
       executionMode: this.config.executionMode,
@@ -91,6 +92,7 @@ export class DecisionEngine {
       featureSnapshot: input.features,
       evidenceSnapshot,
       sourceQuality: input.sourceQuality,
+      sourceProtocolVerificationId: input.sourceProtocolVerificationId,
       eventIntegrity: input.eventIntegrity,
       operationalDataState: input.operationalDataState,
       blockers,
