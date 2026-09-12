@@ -11,6 +11,39 @@ function isJsonArray(value: unknown): value is JsonValue[] {
   return Array.isArray(value);
 }
 
+function getNumericField(payload: JsonObject, ...fieldNames: string[]): number | null {
+  for (const fieldName of fieldNames) {
+    const value = payload[fieldName];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function getLastStreamPrice(stream: JsonValue[]): number | null {
+  const lastValue = stream[stream.length - 1];
+
+  if (isJsonObject(lastValue)) {
+    return getNumericField(lastValue, 'price', 'rate', 'value', 'val', 'close');
+  }
+
+  if (isJsonArray(lastValue)) {
+    const price = lastValue[1];
+    return typeof price === 'number' && Number.isFinite(price) ? price : null;
+  }
+
+  return null;
+}
+
+function extractJsonArray(text: string): string | null {
+  const arrayStart = text.indexOf('[');
+  if (arrayStart < 0) return null;
+
+  const packetPrefix = text.slice(0, arrayStart).trim();
+  if (!/^\d+(?:-\d*)?$/.test(packetPrefix)) return null;
+
+  return text.slice(arrayStart);
+}
+
 function createTick(assetName: string, p: number): Tick {
   return {
     tickSchemaVersion: '1.0',
@@ -36,10 +69,9 @@ export async function parseFrame(payloadBuffer: Uint8Array): Promise<Tick | null
   try {
     const text = new TextDecoder().decode(payloadBuffer);
     
-    // Processa apenas as mensagens de dados (42)
-    if (!text.startsWith('42[')) return null;
-    
-    const jsonStr = text.substring(2);
+    const jsonStr = extractJsonArray(text);
+    if (!jsonStr) return null;
+
     let data: unknown;
     try {
       data = JSON.parse(jsonStr) as unknown;
@@ -55,9 +87,9 @@ export async function parseFrame(payloadBuffer: Uint8Array): Promise<Tick | null
     // Caso 1: Evento direto de "update"
     if (eventName === 'update' || eventName === 'price_update') {
       const asset = payload.asset ?? payload.symbol;
-      const price = payload.price ?? payload.rate ?? payload.val;
+      const price = getNumericField(payload, 'price', 'rate', 'val');
       
-      if (asset && price && typeof price === 'number') {
+      if (asset && price !== null) {
         return createTick(String(asset).replace('_otc', ' OTC'), price);
       }
     }
@@ -66,22 +98,35 @@ export async function parseFrame(payloadBuffer: Uint8Array): Promise<Tick | null
     if (eventName === 'updateHistoryNew' && isJsonArray(payload.history) && payload.history.length > 0) {
       const asset = payload.asset ?? payload.symbol;
       const lastTick = payload.history[payload.history.length - 1];
-      const price = isJsonObject(lastTick) ? lastTick.price : isJsonArray(lastTick) ? lastTick[1] : null;
+      const price = isJsonObject(lastTick)
+        ? getNumericField(lastTick, 'price', 'rate', 'value', 'val', 'close')
+        : isJsonArray(lastTick) ? getLastStreamPrice([lastTick]) : null;
       
-      if (asset && price && typeof price === 'number') {
+      if (asset && price !== null) {
+        return createTick(String(asset).replace('_otc', ' OTC'), price);
+      }
+    }
+
+    // Caso 3: Stream incremental de preços, geralmente emitido como [timestamp, price].
+    if (eventName === 'updateStream' && isJsonArray(payload.data) && payload.data.length > 0) {
+      const asset = payload.asset ?? payload.symbol;
+      const price = getLastStreamPrice(payload.data);
+
+      if (asset && price !== null) {
         return createTick(String(asset).replace('_otc', ' OTC'), price);
       }
     }
     
-    // Caso 3: Fallback generico para qualquer array estruturado 
-    if (payload.symbol && payload.price && typeof payload.price === 'number') {
+    // Caso 4: Fallback generico para qualquer array estruturado 
+    const directPrice = getNumericField(payload, 'price');
+    if (payload.symbol && directPrice !== null) {
       if (eventName.includes('chat') || eventName.includes('alert')) return null;
-      return createTick(String(payload.symbol).replace('_otc', ' OTC'), payload.price);
+      return createTick(String(payload.symbol).replace('_otc', ' OTC'), directPrice);
     }
     
-    if (payload.asset && payload.price && typeof payload.price === 'number') {
+    if (payload.asset && directPrice !== null) {
       if (eventName.includes('chat') || eventName.includes('alert')) return null;
-      return createTick(String(payload.asset).replace('_otc', ' OTC'), payload.price);
+      return createTick(String(payload.asset).replace('_otc', ' OTC'), directPrice);
     }
 
   } catch (err) {
