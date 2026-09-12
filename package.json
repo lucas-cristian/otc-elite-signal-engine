@@ -1,7 +1,7 @@
 {
-  "name": "trevante",
+  "name": "otc-elite-signal-engine",
   "version": "1.0.0",
-  "description": "",
+  "description": "Motor preditivo OTC e gerador de sinais",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
