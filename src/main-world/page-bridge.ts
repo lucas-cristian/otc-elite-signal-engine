@@ -79,8 +79,15 @@ function setupPageBridge() {
           return; // Tipo desconhecido
         }
 
+        
+        if ((window as any).__loggedFrames === undefined) { (window as any).__loggedFrames = 0; }
+        if ((window as any).__loggedFrames < 3) {
+           console.log("[PageBridge] Raw Frame Payload: ", typeof event.data, event.data.toString().substring(0,200));
+           (window as any).__loggedFrames++;
+        }
         emitEvent({
           type: 'PRICE_FRAME',
+
           connectionId: this.connectionId,
           payloadBuffer,
           timestampMs: Date.now()
