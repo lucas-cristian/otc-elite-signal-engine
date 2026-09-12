@@ -1,5 +1,16 @@
 import { Tick } from '../common/models/types';
 
+type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
+type JsonObject = { [key: string]: JsonValue };
+
+function isJsonObject(value: JsonValue): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isJsonArray(value: unknown): value is JsonValue[] {
+  return Array.isArray(value);
+}
+
 function createTick(assetName: string, p: number): Tick {
   return {
     tickSchemaVersion: '1.0',
@@ -29,22 +40,22 @@ export async function parseFrame(payloadBuffer: Uint8Array): Promise<Tick | null
     if (!text.startsWith('42[')) return null;
     
     const jsonStr = text.substring(2);
-    let data: any;
+    let data: unknown;
     try {
-      data = JSON.parse(jsonStr);
+      data = JSON.parse(jsonStr) as unknown;
     } catch(e) { return null; }
 
-    if (!Array.isArray(data) || data.length < 2) return null;
+    if (!isJsonArray(data) || data.length < 2) return null;
 
     const eventName = data[0];
     const payload = data[1];
 
-    if (!payload || typeof payload !== 'object') return null;
+    if (typeof eventName !== 'string' || !isJsonObject(payload)) return null;
 
     // Caso 1: Evento direto de "update"
     if (eventName === 'update' || eventName === 'price_update') {
-      const asset = payload.asset || payload.symbol;
-      const price = payload.price || payload.rate || payload.val;
+      const asset = payload.asset ?? payload.symbol;
+      const price = payload.price ?? payload.rate ?? payload.val;
       
       if (asset && price && typeof price === 'number') {
         return createTick(String(asset).replace('_otc', ' OTC'), price);
@@ -52,10 +63,10 @@ export async function parseFrame(payloadBuffer: Uint8Array): Promise<Tick | null
     }
     
     // Caso 2: Evento de "updateHistoryNew" (quando abre o grafico)
-    if (eventName === 'updateHistoryNew' && Array.isArray(payload.history) && payload.history.length > 0) {
-      const asset = payload.asset || payload.symbol;
+    if (eventName === 'updateHistoryNew' && isJsonArray(payload.history) && payload.history.length > 0) {
+      const asset = payload.asset ?? payload.symbol;
       const lastTick = payload.history[payload.history.length - 1];
-      const price = lastTick.price || lastTick[1];
+      const price = isJsonObject(lastTick) ? lastTick.price : isJsonArray(lastTick) ? lastTick[1] : null;
       
       if (asset && price && typeof price === 'number') {
         return createTick(String(asset).replace('_otc', ' OTC'), price);

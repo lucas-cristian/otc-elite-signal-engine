@@ -1,5 +1,11 @@
 import { NormalizedMarketEvent, ConnectionEventType } from '../common/models/market-events';
 
+declare global {
+  interface Window {
+    __loggedUpdates?: number;
+  }
+}
+
 // Injetado na página original
 function setupPageBridge() {
   const OriginalWebSocket = window.WebSocket;
@@ -81,10 +87,10 @@ function setupPageBridge() {
 
         
         if (typeof event.data === 'string' && event.data.startsWith('42[')) {
-          if (!((window as any).__loggedUpdates)) { (window as any).__loggedUpdates = 0; }
-          if ((window as any).__loggedUpdates < 5) {
+           if (window.__loggedUpdates === undefined) { window.__loggedUpdates = 0; }
+           if (window.__loggedUpdates < 5) {
              console.log("[PageBridge] Market Data Event: ", event.data.substring(0,250));
-             (window as any).__loggedUpdates++;
+             window.__loggedUpdates++;
           }
         }
         emitEvent({

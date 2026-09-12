@@ -94,17 +94,11 @@ export class ResultEngine {
       exitMarketSourceIdentity: tick.marketSourceIdentity,
       
       recoveredAcrossPageSession: false, // Pode ser alterado se carregado do disco
-      entryPageSessionId: signal.entryMarketSourceIdentity.platform, // O Signal não guarda session. Na verdade, precisamos passar isso. Wait, schema?
+      entryPageSessionId: 'unknown',
       exitPageSessionId: tick.pageSessionId,
       
       evaluatedAt: nowMs
     };
-
-    // Fix: O EntryPageSessionId deveria vir do entry resolution original.
-    // Na estrutura atual o SignalRecord não tem isso diretamente, mas podemos preencher com empty string para mock,
-    // ou idealmente ler do EntryResolutionRecord se precisarmos em Fases avançadas.
-    // Para resolver type compliance, vamos assumir 'unknown' se não temos na mão.
-    (result as any).entryPageSessionId = 'unknown'; 
 
     return { status: 'RESOLVED', result };
   }
