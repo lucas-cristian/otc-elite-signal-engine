@@ -1,11 +1,13 @@
 import { alignToCandleEnd, alignToCandleStart, TIMEFRAME_MS } from '../../common/time/candle-time.js';
 export class CandleBuilder {
     canonicalAssetId;
+    feedId;
     timeframe;
     emitter;
     state = null;
-    constructor(canonicalAssetId, timeframe, emitter) {
+    constructor(canonicalAssetId, feedId, timeframe, emitter) {
         this.canonicalAssetId = canonicalAssetId;
+        this.feedId = feedId;
         this.timeframe = timeframe;
         this.emitter = emitter;
     }
@@ -63,8 +65,9 @@ export class CandleBuilder {
     }
     emitEmpty(start) {
         this.emitter({
-            candleSchemaVersion: '2',
+            candleSchemaVersion: '3',
             canonicalAssetId: this.canonicalAssetId,
+            feedId: this.feedId,
             timeframe: this.timeframe,
             startTimestamp: start,
             endTimestamp: alignToCandleEnd(start, this.timeframe),
@@ -80,8 +83,9 @@ export class CandleBuilder {
     }
     toCandle(state, lifecycle) {
         return {
-            candleSchemaVersion: '2',
+            candleSchemaVersion: '3',
             canonicalAssetId: this.canonicalAssetId,
+            feedId: this.feedId,
             timeframe: this.timeframe,
             startTimestamp: state.start,
             endTimestamp: alignToCandleEnd(state.start, this.timeframe),

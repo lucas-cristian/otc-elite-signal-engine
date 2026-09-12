@@ -1,3 +1,4 @@
+import type { CaptureTransportSnapshot, SourceTabVisibility } from '../../common/models/runtime-telemetry.js';
 import type { DiscoveryObservation } from '../../common/protocol/market-events.js';
 import { isSemanticPayoutEvent, isSemanticPriceEvent } from '../../common/validation/semantic-event-validator.js';
 import { createValidatedTick } from '../../common/validation/tick-factory.js';
@@ -22,10 +23,49 @@ interface RuntimeContext {
 
 const WATCHDOG_ALARM_NAME = 'otc-elite-data-health-watchdog';
 const WATCHDOG_PERIOD_MINUTES = 0.5;
+const SEMANTIC_PORT_NAME = 'OTC_ELITE_SEMANTIC_STREAM_V1';
 const discoveryRing: DiscoveryObservation[] = [];
+const captureByTab = new Map<number, CaptureTransportSnapshot>();
+let latestCaptureTabId: number | null = null;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function defaultCapture(tabId: number | null): CaptureTransportSnapshot {
+  return {
+    transportSchemaVersion: '1',
+    tabId,
+    pageSessionId: null,
+    connected: false,
+    visibility: 'unknown',
+    frozen: null,
+    discarded: null,
+    autoDiscardable: null,
+    lastSemanticEventAt: null,
+    lastLifecycleEventAt: null,
+    lastConnectionEventAt: null,
+    lastLifecycleReason: null,
+    mitigation: 'RUNTIME_PORT_MICROTASK_FLUSH_AUTO_DISCARD_DISABLED',
+  };
+}
+
+function captureState(tabId: number): CaptureTransportSnapshot {
+  const existing = captureByTab.get(tabId);
+  if (existing) return existing;
+  const created = defaultCapture(tabId);
+  captureByTab.set(tabId, created);
+  return created;
+}
+
+function latestCapture(): CaptureTransportSnapshot {
+  if (latestCaptureTabId !== null) return captureByTab.get(latestCaptureTabId) ?? defaultCapture(null);
+  const latest = [...captureByTab.values()].sort((a, b) => (b.lastSemanticEventAt ?? b.lastLifecycleEventAt ?? 0) - (a.lastSemanticEventAt ?? a.lastLifecycleEventAt ?? 0))[0];
+  return latest ?? defaultCapture(null);
+}
+
+function visibility(value: unknown): SourceTabVisibility {
+  return value === 'visible' || value === 'hidden' || value === 'prerender' ? value : 'unknown';
 }
 
 async function loadBuildMetadata(): Promise<BuildMetadata> {
@@ -44,13 +84,7 @@ async function loadBuildMetadata(): Promise<BuildMetadata> {
     if (gitWorkingTreeClean !== null && typeof gitWorkingTreeClean !== 'boolean') throw new Error('invalid gitWorkingTreeClean');
     return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, gitCommit, gitWorkingTreeClean };
   } catch {
-    return {
-      appVersion: fallbackVersion,
-      buildId: 'runtime-metadata-unavailable',
-      sourceTreeSha256: null,
-      gitCommit: null,
-      gitWorkingTreeClean: null,
-    };
+    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, gitCommit: null, gitWorkingTreeClean: null };
   }
 }
 
@@ -76,26 +110,111 @@ function isDiscoveryObservation(value: unknown): value is DiscoveryObservation {
     && (value.direction === 'INBOUND' || value.direction === 'OUTBOUND');
 }
 
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+async function processSemanticBatch(payload: unknown, tabId: number | null): Promise<void> {
+  if (!Array.isArray(payload)) return;
+  const now = Date.now();
+  if (tabId !== null) {
+    const state = captureState(tabId);
+    state.lastSemanticEventAt = now;
+    state.connected = true;
+    latestCaptureTabId = tabId;
+  }
+  const { pipeline } = await runtime;
+  for (const item of payload) {
+    if (!isRecord(item) || typeof item.pageSessionId !== 'string') continue;
+    if (tabId !== null) captureState(tabId).pageSessionId = item.pageSessionId;
+    if (isSemanticPriceEvent(item.event)) {
+      const tick = createValidatedTick(item.event, item.pageSessionId);
+      if (tick.integrity !== 'VALID') continue;
+      await pipeline.enqueue({ tick });
+      continue;
+    }
+    if (isSemanticPayoutEvent(item.event)) await pipeline.enqueuePayout(item.event.payoutSnapshot);
+  }
+  await pipeline.drain();
+}
+
+function processLifecycle(payload: unknown, tabId: number | null): void {
+  if (tabId === null || !isRecord(payload)) return;
+  const state = captureState(tabId);
+  if (typeof payload.pageSessionId === 'string') state.pageSessionId = payload.pageSessionId;
+  state.visibility = visibility(payload.visibility);
+  state.lastLifecycleEventAt = typeof payload.capturedAt === 'number' ? payload.capturedAt : Date.now();
+  state.lastLifecycleReason = typeof payload.reason === 'string' ? payload.reason : 'UNKNOWN';
+  state.connected = true;
+  latestCaptureTabId = tabId;
+}
+
+function processConnectionEvent(_payload: unknown, tabId: number | null): void {
+  if (tabId === null) return;
+  const state = captureState(tabId);
+  state.lastConnectionEventAt = Date.now();
+  state.connected = true;
+  latestCaptureTabId = tabId;
+}
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== SEMANTIC_PORT_NAME) return;
+  const tabId = port.sender?.tab?.id ?? null;
+  if (tabId !== null) {
+    const state = captureState(tabId);
+    state.connected = true;
+    latestCaptureTabId = tabId;
+    void chrome.tabs.update(tabId, { autoDiscardable: false }).then((tab) => {
+      const current = captureState(tabId);
+      current.autoDiscardable = tab?.autoDiscardable ?? false;
+      current.discarded = tab?.discarded ?? current.discarded;
+      current.frozen = tab?.frozen ?? current.frozen;
+    }).catch(() => undefined);
+  }
+
+  port.onMessage.addListener((message) => {
+    if (!isRecord(message)) return;
+    if (message.type === 'SEMANTIC_EVENT_BATCH') {
+      void processSemanticBatch(message.payload, tabId).catch(() => undefined);
+      return;
+    }
+    if (message.type === 'PROTOCOL_DISCOVERY_OBSERVATION') {
+      if (isDiscoveryObservation(message.payload)) {
+        discoveryRing.push(message.payload);
+        if (discoveryRing.length > 100) discoveryRing.splice(0, discoveryRing.length - 100);
+      }
+      return;
+    }
+    if (message.type === 'SOURCE_TAB_LIFECYCLE') {
+      processLifecycle(message.payload, tabId);
+      return;
+    }
+    if (message.type === 'SOURCE_CONNECTION_EVENT') processConnectionEvent(message.payload, tabId);
+  });
+
+  port.onDisconnect.addListener(() => {
+    if (tabId === null) return;
+    captureState(tabId).connected = false;
+  });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!captureByTab.has(tabId)) return;
+  const state = captureState(tabId);
+  if (typeof changeInfo.frozen === 'boolean') state.frozen = changeInfo.frozen;
+  if (typeof changeInfo.discarded === 'boolean') state.discarded = changeInfo.discarded;
+  if (typeof changeInfo.autoDiscardable === 'boolean') state.autoDiscardable = changeInfo.autoDiscardable;
+  if (tab.autoDiscardable === true) void chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => undefined);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  captureByTab.delete(tabId);
+  if (latestCaptureTabId === tabId) latestCaptureTabId = null;
+});
+
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (!isRecord(message)) return;
 
   if (message.type === 'SEMANTIC_EVENT_BATCH') {
-    const payload = message.payload;
-    if (!Array.isArray(payload)) return;
-    void runtime.then(async ({ pipeline }) => {
-      for (const item of payload) {
-        if (!isRecord(item) || typeof item.pageSessionId !== 'string') continue;
-        if (isSemanticPriceEvent(item.event)) {
-          const tick = createValidatedTick(item.event, item.pageSessionId);
-          if (tick.integrity !== 'VALID') continue;
-          await pipeline.enqueue({ tick });
-          continue;
-        }
-        if (isSemanticPayoutEvent(item.event)) await pipeline.enqueuePayout(item.event.payoutSnapshot);
-      }
-      await pipeline.drain();
-      sendResponse({ ok: true });
-    }).catch((error: unknown) => sendResponse({ ok: false, error: error instanceof Error ? error.message : 'runtime failure' }));
+    void processSemanticBatch(message.payload, sender.tab?.id ?? null)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error: unknown) => sendResponse({ ok: false, error: error instanceof Error ? error.message : 'runtime failure' }));
     return true;
   }
 
@@ -117,11 +236,8 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
     void runtime.then(async ({ journal, pipeline }) => {
       const nowMs = Date.now();
       await pipeline.watchdog(nowMs);
-      const [snapshot, health] = await Promise.all([
-        journal.snapshot(),
-        Promise.resolve(pipeline.getOperationalHealth(nowMs)),
-      ]);
-      sendResponse(computeAnalytics(snapshot, health));
+      const [snapshot, health] = await Promise.all([journal.snapshot(), Promise.resolve(pipeline.getOperationalHealth(nowMs))]);
+      sendResponse(computeAnalytics(snapshot, health, pipeline.getAllAssetFeedOperationalHealth(nowMs), latestCapture(), pipeline.getActiveEpisodeCount(nowMs)));
     }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
     return true;
   }
@@ -132,7 +248,13 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       await pipeline.finalizeThrough(createdAt);
       const operationalHealth = pipeline.getOperationalHealth(createdAt);
       const exporter = new DatasetExporter(journal);
-      const dataset = await exporter.create({ ...buildMetadata, createdAt, operationalHealth });
+      const dataset = await exporter.create({
+        ...buildMetadata,
+        createdAt,
+        operationalHealth,
+        assetFeedHealth: pipeline.getAllAssetFeedOperationalHealth(createdAt),
+        captureTransport: latestCapture(),
+      });
       sendResponse({ filename: `otc-elite-dataset-${dataset.manifest.datasetId.slice(0, 12)}.json`, json: JSON.stringify(dataset, null, 2) });
     }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'export failure' }));
     return true;

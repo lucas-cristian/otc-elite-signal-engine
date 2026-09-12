@@ -1,8 +1,19 @@
 import type { DecisionRecord, DecisionSignalLink, EntryResolutionRecord, ResultRecord, SignalRecord } from './journal-types.js';
+import type { CaptureTransportSnapshot } from './runtime-telemetry.js';
 import type { Candle, OperationalDataState, PayoutSnapshot, Tick } from './types.js';
 
+export interface DatasetAssetFeedHealth {
+  canonicalAssetId: string;
+  feedId: string;
+  state: OperationalDataState;
+  reason: string;
+  assessedAt: number;
+  latestTickReceivedAt: number | null;
+  latestTickAgeMs: number | null;
+}
+
 export interface DatasetManifest {
-  datasetSchemaVersion: '3';
+  datasetSchemaVersion: '4';
   datasetId: string;
   createdAt: number;
   appVersion: string;
@@ -15,8 +26,13 @@ export interface DatasetManifest {
   exportOperationalDataState: OperationalDataState;
   exportOperationalDataReason: string;
   latestTickAgeMsAtExport: number | null;
+  assetFeedHealthAtExport: DatasetAssetFeedHealth[];
+  captureTransportAtExport: CaptureTransportSnapshot;
   tickCount: number;
   decisionCount: number;
+  rawCandidateDecisionCount: number;
+  marketEpisodeCount: number;
+  suppressedCorrelatedDecisionCount: number;
   signalCount: number;
   resultCount: number;
   configHashes: string[];

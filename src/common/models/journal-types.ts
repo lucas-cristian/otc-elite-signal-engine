@@ -12,6 +12,7 @@ import type {
 
 export type SignalDirection = 'CALL' | 'PUT';
 export type FinalDecision = SignalDirection | 'NO_TRADE' | 'BLOCKED' | 'DATA_UNAVAILABLE';
+export type DecisionArbitrationStatus = 'NOT_APPLICABLE' | 'PRIMARY' | 'SUPPRESSED_CORRELATED' | 'SUPPRESSED_CONFLICT' | 'SUPPRESSED_ACTIVE_EPISODE';
 export type EvidenceFamily = 'MOMENTUM' | 'REJECTION' | 'TICK_FLOW' | 'STRUCTURE' | 'REGIME' | 'DISTANCE' | 'CLASSICAL';
 
 export interface FeatureSnapshot {
@@ -64,7 +65,7 @@ export interface EvaluationWindow {
 }
 
 export interface DecisionRecord {
-  decisionSchemaVersion: '3';
+  decisionSchemaVersion: '4';
   decisionId: string;
   decisionGranularityKey: string;
   executionMode: ExecutionMode;
@@ -85,6 +86,7 @@ export interface DecisionRecord {
   featureSnapshot: FeatureSnapshot | null;
   evidenceSnapshot: EvidenceSnapshot | null;
   sourceQuality: SourceQuality;
+  sourceFeedId: string | null;
   sourceProtocolVerificationId: string | null;
   eventIntegrity: EventIntegrity;
   operationalDataState: OperationalDataState;
@@ -94,6 +96,7 @@ export interface DecisionRecord {
   configSnapshot: Record<string, unknown>;
   appVersion: string;
   marketEpisodeId: string | null;
+  arbitrationStatus: DecisionArbitrationStatus;
   createdAt: number;
 }
 
@@ -130,10 +133,11 @@ export interface UnresolvedEntryRecord {
 export type EntryResolutionRecord = ResolvedEntryRecord | UnresolvedEntryRecord;
 
 export interface SignalRecord {
-  signalSchemaVersion: '2';
+  signalSchemaVersion: '3';
   signalId: string;
   signalFingerprint: string;
   decisionId: string;
+  marketEpisodeId: string;
   executionMode: ExecutionMode;
   canonicalAssetId: string;
   direction: SignalDirection;

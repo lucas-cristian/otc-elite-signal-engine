@@ -29,6 +29,7 @@ export interface DecisionInput {
   eventIntegrity: EventIntegrity;
   operationalDataState: OperationalDataState;
   sourceQuality: SourceQuality;
+  sourceFeedId: string | null;
   sourceProtocolVerificationId: string | null;
 }
 
@@ -71,7 +72,7 @@ export class DecisionEngine {
     });
     const publishedAt = input.computedAt;
     return {
-      decisionSchemaVersion: '3',
+      decisionSchemaVersion: '4',
       decisionId,
       decisionGranularityKey,
       executionMode: this.config.executionMode,
@@ -92,6 +93,7 @@ export class DecisionEngine {
       featureSnapshot: input.features,
       evidenceSnapshot,
       sourceQuality: input.sourceQuality,
+      sourceFeedId: input.sourceFeedId,
       sourceProtocolVerificationId: input.sourceProtocolVerificationId,
       eventIntegrity: input.eventIntegrity,
       operationalDataState: input.operationalDataState,
@@ -101,6 +103,7 @@ export class DecisionEngine {
       configSnapshot: this.config.configSnapshot,
       appVersion: this.config.appVersion,
       marketEpisodeId: null,
+      arbitrationStatus: 'NOT_APPLICABLE',
       createdAt: input.computedAt,
     };
   }

@@ -24,8 +24,17 @@ export class DatasetExporter {
                 ...snapshot.ticks.flatMap((tick) => tick.protocolVerificationId === null ? [] : [tick.protocolVerificationId]),
                 ...snapshot.payoutSnapshots.flatMap((payout) => payout.protocolVerificationId === null ? [] : [payout.protocolVerificationId]),
             ])].sort();
+        const assetFeedHealthAtExport = metadata.assetFeedHealth.map((item) => ({
+            canonicalAssetId: item.canonicalAssetId,
+            feedId: item.feedId,
+            state: item.state,
+            reason: item.reason,
+            assessedAt: item.assessedAt,
+            latestTickReceivedAt: item.latestTickReceivedAt,
+            latestTickAgeMs: item.latestTickAgeMs,
+        }));
         const manifestBase = {
-            datasetSchemaVersion: '3',
+            datasetSchemaVersion: '4',
             createdAt: metadata.createdAt,
             appVersion: metadata.appVersion,
             buildId: metadata.buildId,
@@ -37,17 +46,19 @@ export class DatasetExporter {
             exportOperationalDataState: metadata.operationalHealth.state,
             exportOperationalDataReason: metadata.operationalHealth.reason,
             latestTickAgeMsAtExport: metadata.operationalHealth.latestTickAgeMs,
+            assetFeedHealthAtExport,
+            captureTransportAtExport: metadata.captureTransport,
             tickCount: snapshot.ticks.length,
             decisionCount: snapshot.decisions.length,
+            rawCandidateDecisionCount: snapshot.decisions.filter((decision) => decision.arbitrationStatus !== 'NOT_APPLICABLE').length,
+            marketEpisodeCount: new Set(snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'PRIMARY' && decision.marketEpisodeId !== null).map((decision) => decision.marketEpisodeId)).size,
+            suppressedCorrelatedDecisionCount: snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'SUPPRESSED_CORRELATED' || decision.arbitrationStatus === 'SUPPRESSED_ACTIVE_EPISODE').length,
             signalCount: snapshot.signals.length,
             resultCount: snapshot.results.length,
             configHashes,
             checksumSha256,
         };
-        const manifest = {
-            ...manifestBase,
-            datasetId: canonicalEntityHash('DATASET', 3, manifestBase),
-        };
+        const manifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 4, manifestBase) };
         return { manifest, ...body };
     }
 }

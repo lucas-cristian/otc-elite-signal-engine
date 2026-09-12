@@ -2,7 +2,7 @@
 
 ## Status
 
-Release: **1.4.0**
+Release: **1.5.0**
 
 Protocol registry: **2026-09-12.1**
 
@@ -184,3 +184,16 @@ The 6 directional results contain 2 correct and 4 incorrect. This tiny descripti
 ## 10. Frozen safety boundary
 
 No auto-trading, auto-click, CALL/PUT click, order submission or realized-P&L path is part of the project. Protocol verification only authorizes scientific signal processing of an observed feed schema; it does not authorize broker execution and does not establish strategy validity.
+
+
+## Phase 1.5 — focus resilience and statistical independence
+
+- Timer-free semantic transport: `runtime.Port` + microtask flush.
+- Disable automatic tab discard where Chrome permits and observe `frozen`/`discarded` lifecycle state.
+- Fail closed when the source tab is actually frozen; never synthesize missed ticks.
+- Health authority is per asset + feed.
+- Candles are feed-scoped.
+- MarketEpisodeArbitrator groups correlated multi-timeframe candidates and overlapping 60-second windows.
+- Only PRIMARY episode decisions can resolve an entry; correlated and ambiguous candidates remain immutable audit records.
+- Analytics separates raw candidate count from independent episode count and reports strategy/timeframe descriptive slices.
+- No threshold tuning is authorized by this phase.

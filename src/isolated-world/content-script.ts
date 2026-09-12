@@ -1,11 +1,13 @@
 const OTC_BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
 const OTC_CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
+const OTC_PORT_NAME = 'OTC_ELITE_SEMANTIC_STREAM_V1';
 const otcPageOrigin = window.location.origin;
 const otcPageOriginUsable = otcPageOrigin !== 'null' && otcPageOrigin.startsWith('https://');
 const otcPageSessionId = crypto.randomUUID();
 const otcConnections = new Map<string, { nextSequence: number; pending: Map<number, Record<string, unknown>> }>();
-const otcBatch: Array<{ pageSessionId: string; event: Record<string, unknown> }> = [];
-let otcFlushTimer: number | null = null;
+const otcOutbox: Array<{ pageSessionId: string; event: Record<string, unknown> }> = [];
+let otcPort: chrome.runtime.Port | null = null;
+let otcFlushQueued = false;
 
 function otcIsRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -65,16 +67,43 @@ function otcIsSemanticPayoutEvent(value: unknown): value is Record<string, unkno
       || (payout.quality !== 'VERIFIED' && payout.protocolVerificationId === null));
 }
 
-function otcScheduleFlush(): void {
-  if (otcFlushTimer !== null) return;
-  otcFlushTimer = window.setTimeout(otcFlush, 50);
+function otcConnectPort(): chrome.runtime.Port {
+  if (otcPort) return otcPort;
+  const port = chrome.runtime.connect({ name: OTC_PORT_NAME });
+  otcPort = port;
+  port.onDisconnect.addListener(() => {
+    if (otcPort === port) otcPort = null;
+    if (otcOutbox.length > 0) otcQueueFlush();
+  });
+  otcSendLifecycle('PORT_CONNECTED');
+  return port;
+}
+
+function otcPostPort(message: unknown): boolean {
+  try {
+    otcConnectPort().postMessage(message);
+    return true;
+  } catch {
+    otcPort = null;
+    return false;
+  }
+}
+
+function otcQueueFlush(): void {
+  if (otcFlushQueued) return;
+  otcFlushQueued = true;
+  queueMicrotask(otcFlush);
 }
 
 function otcFlush(): void {
-  otcFlushTimer = null;
-  if (otcBatch.length === 0) return;
-  const payload = otcBatch.splice(0, otcBatch.length);
-  void chrome.runtime.sendMessage({ type: 'SEMANTIC_EVENT_BATCH', payload });
+  otcFlushQueued = false;
+  if (otcOutbox.length === 0) return;
+  const payload = otcOutbox.splice(0, Math.min(otcOutbox.length, 100));
+  if (!otcPostPort({ type: 'SEMANTIC_EVENT_BATCH', payload, sentAt: Date.now() })) {
+    otcOutbox.unshift(...payload);
+    return;
+  }
+  if (otcOutbox.length > 0) otcQueueFlush();
 }
 
 function otcPushSemantic(event: Record<string, unknown>): void {
@@ -88,9 +117,23 @@ function otcPushSemantic(event: Record<string, unknown>): void {
     if (!ordered) break;
     state.pending.delete(state.nextSequence);
     state.nextSequence += 1;
-    otcBatch.push({ pageSessionId: otcPageSessionId, event: ordered });
-    if (otcBatch.length >= 50) otcFlush(); else otcScheduleFlush();
+    otcOutbox.push({ pageSessionId: otcPageSessionId, event: ordered });
   }
+  otcQueueFlush();
+}
+
+function otcSendLifecycle(reason: string): void {
+  const visibility = document.visibilityState;
+  otcPostPort({
+    type: 'SOURCE_TAB_LIFECYCLE',
+    payload: {
+      pageSessionId: otcPageSessionId,
+      reason,
+      visibility,
+      hidden: document.hidden,
+      capturedAt: Date.now(),
+    },
+  });
 }
 
 window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
@@ -101,16 +144,25 @@ window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
     const connectionId = payload.connectionId as string;
     if (payload.event === 'OPEN') otcConnections.set(connectionId, { nextSequence: 0, pending: new Map() });
     else otcConnections.delete(connectionId);
+    otcPostPort({ type: 'SOURCE_CONNECTION_EVENT', payload: { pageSessionId: otcPageSessionId, event: payload, capturedAt: Date.now() } });
     return;
   }
   if (otcIsSemanticPriceEvent(payload) || otcIsSemanticPayoutEvent(payload)) {
     otcPushSemantic(payload);
     return;
   }
-  if (otcIsDiscoveryObservation(payload)) void chrome.runtime.sendMessage({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
+  if (otcIsDiscoveryObservation(payload)) otcPostPort({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
 });
 
+document.addEventListener('visibilitychange', () => otcSendLifecycle('VISIBILITY_CHANGE'));
+window.addEventListener('pageshow', () => otcSendLifecycle('PAGE_SHOW'));
+window.addEventListener('pagehide', () => otcSendLifecycle('PAGE_HIDE'));
+document.addEventListener('freeze', () => otcSendLifecycle('PAGE_FREEZE'));
+document.addEventListener('resume', () => otcSendLifecycle('PAGE_RESUME'));
+
 if (otcPageOriginUsable) {
+  otcConnectPort();
+  otcSendLifecycle('CONTENT_SCRIPT_READY');
   const otcBridgeScript = document.createElement('script');
   otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
   otcBridgeScript.type = 'module';

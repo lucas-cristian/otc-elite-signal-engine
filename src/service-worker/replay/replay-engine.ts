@@ -37,6 +37,8 @@ export class ReplayEngine {
       gitWorkingTreeClean: dataset.manifest.gitWorkingTreeClean ?? null,
       createdAt: dataset.manifest.createdAt,
       operationalHealth,
+      assetFeedHealth: pipeline.getAllAssetFeedOperationalHealth(dataset.manifest.createdAt),
+      captureTransport: dataset.manifest.captureTransportAtExport,
     });
   }
 

@@ -2,7 +2,7 @@
 
 Date: 2026-09-12
 Previous main release: 4038efb — scientific remediation 1.1.0
-Sandbox release: 1.4.0
+Sandbox release: 1.5.0
 
 ## Evidence received
 
@@ -79,3 +79,10 @@ PayoutSnapshot v3 adds explicit `expirationBinding`. Captured `chafor` payout is
 Regression of the v1.3.0 692-tick dataset under the v1.4.0 frozen registry produces 18 CALL/PUT decisions (15 CALL, 3 PUT), 18 resolved entries and 18 signals without lowering the 0.35 score threshold. Six directional results resolve before the feed ends; twelve are finalized as `DATA_UNAVAILABLE`. Economic sample remains zero. At dataset creation, the reconstructed health is `DATA_UNAVAILABLE` with a latest-tick age of 243836 ms.
 
 Raw-capture decoder validation after exact duplicate removal confirms VERIFIED semantic output for all registry hosts: DEMO EU 234 price/24 payout, REAL US North 38/2, and REAL US South 127/6.
+
+
+## Release 1.5.0 remediation
+
+The hidden-tab stall was traced to a timer-dependent batch flush in the content script. The production route now uses `chrome.runtime.Port` plus `queueMicrotask`, disables automatic discard on the source tab where supported, and exposes lifecycle/freeze telemetry. Chrome can freeze a background tab entirely; the extension does not fake continuity in that case and the asset/feed watchdog transitions to STALE/DATA_UNAVAILABLE.
+
+The global health model was replaced with per `(asset, feed)` health, candles are feed-scoped, and result timeouts use the specific signal source. Multi-timeframe and overlapping candidates are arbitrated into independent market episodes; only one PRIMARY decision can create a signal.

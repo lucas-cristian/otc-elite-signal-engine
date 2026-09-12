@@ -36,6 +36,6 @@ export class MemoryJournal {
             map.set(key, value);
     }
     candleKey(candle) {
-        return `${candle.canonicalAssetId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
+        return `${candle.canonicalAssetId}:${candle.feedId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
     }
 }

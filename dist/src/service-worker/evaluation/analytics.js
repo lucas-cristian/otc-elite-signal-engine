@@ -9,9 +9,42 @@ function wilson(successes, total, z = 1.96) {
     const margin = z * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total) / denominator;
     return [Math.max(0, center - margin), Math.min(1, center + margin)];
 }
-export function computeAnalytics(snapshot, health) {
+function performanceSlices(snapshot, mode) {
+    const decisionById = new Map(snapshot.decisions.map((decision) => [decision.decisionId, decision]));
+    const signalById = new Map(snapshot.signals.map((signal) => [signal.signalId, signal]));
+    const stats = new Map();
+    for (const result of snapshot.results) {
+        if (result.resolutionStatus !== 'RESOLVED' || result.directionalOutcome === 'FLAT')
+            continue;
+        const signal = signalById.get(result.signalId);
+        if (!signal)
+            continue;
+        const decision = decisionById.get(signal.decisionId);
+        if (!decision)
+            continue;
+        const keys = mode === 'TIMEFRAME'
+            ? [decision.timeframe]
+            : [...new Set(decision.strategySnapshots.filter((strategy) => strategy.direction === signal.direction).map((strategy) => strategy.strategyId))];
+        for (const key of keys) {
+            const current = stats.get(key) ?? { resolved: 0, correct: 0 };
+            current.resolved += 1;
+            if (result.directionalOutcome === 'CORRECT')
+                current.correct += 1;
+            stats.set(key, current);
+        }
+    }
+    return [...stats.entries()]
+        .map(([key, value]) => ({ key, ...value, accuracy: value.resolved === 0 ? null : value.correct / value.resolved }))
+        .sort((a, b) => b.resolved - a.resolved || a.key.localeCompare(b.key));
+}
+export function computeAnalytics(snapshot, globalHealth, assetFeedHealth, captureTransport, activeEpisodeCount) {
     const callPutDecisions = snapshot.decisions.filter((decision) => decision.finalDecision === 'CALL' || decision.finalDecision === 'PUT');
     const callPutDecisionCount = callPutDecisions.length;
+    const rawCandidateDecisionCount = snapshot.decisions.filter((decision) => decision.arbitrationStatus !== 'NOT_APPLICABLE').length;
+    const primaryEpisodeDecisionCount = snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'PRIMARY').length;
+    const suppressedCorrelatedDecisionCount = snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'SUPPRESSED_CORRELATED' || decision.arbitrationStatus === 'SUPPRESSED_ACTIVE_EPISODE').length;
+    const suppressedConflictDecisionCount = snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'SUPPRESSED_CONFLICT').length;
+    const marketEpisodeCount = new Set(snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'PRIMARY' && decision.marketEpisodeId !== null).map((decision) => decision.marketEpisodeId)).size;
     const entryResolvedCount = snapshot.entryResolutions.filter((entry) => entry.resolutionStatus === 'RESOLVED').length;
     const entryUnresolvedCount = snapshot.entryResolutions.filter((entry) => entry.resolutionStatus === 'UNRESOLVED').length;
     const resolvedDecisionIds = new Set(snapshot.entryResolutions.map((entry) => entry.decisionId));
@@ -34,11 +67,20 @@ export function computeAnalytics(snapshot, health) {
         : snapshot.payoutSnapshots
             .filter((payout) => payout.canonicalAssetId === latestTick.marketSourceIdentity.canonicalAssetId && payout.feedId === latestTick.marketSourceIdentity.feedId)
             .reduce((latest, payout) => latest === null || payout.capturedAt > latest.capturedAt ? payout : latest, null);
+    const currentHealth = latestTick === null
+        ? globalHealth
+        : assetFeedHealth.find((item) => item.canonicalAssetId === latestTick.marketSourceIdentity.canonicalAssetId && item.feedId === latestTick.marketSourceIdentity.feedId) ?? globalHealth;
     return {
         tickCount: snapshot.ticks.length,
         candleCount: snapshot.candles.length,
         closedCandleCount: snapshot.candles.filter((candle) => candle.lifecycle === 'CLOSED').length,
         decisionCount: snapshot.decisions.length,
+        rawCandidateDecisionCount,
+        primaryEpisodeDecisionCount,
+        suppressedCorrelatedDecisionCount,
+        suppressedConflictDecisionCount,
+        marketEpisodeCount,
+        activeEpisodeCount,
         callPutDecisionCount,
         entryResolvedCount,
         entryUnresolvedCount,
@@ -49,10 +91,13 @@ export function computeAnalytics(snapshot, health) {
         resolvedResultCount: resolved.length,
         unresolvedResultCount,
         resolvedDirectionalSampleSize: directional.length,
+        independentEpisodeResolvedSampleSize: directional.length,
         directionalCorrectCount: correct,
         directionalAccuracy: directional.length === 0 ? null : correct / directional.length,
         directionalWilsonLow: interval?.[0] ?? null,
         directionalWilsonHigh: interval?.[1] ?? null,
+        strategyPerformance: performanceSlices(snapshot, 'STRATEGY'),
+        timeframePerformance: performanceSlices(snapshot, 'TIMEFRAME'),
         economicSampleSize: economic.length,
         economicIneligibleResolvedCount: resolved.length - economic.length,
         economicCoverageRate: resolved.length === 0 ? null : economic.length / resolved.length,
@@ -66,7 +111,7 @@ export function computeAnalytics(snapshot, health) {
         currentFeedId: latestTick?.marketSourceIdentity.feedId ?? null,
         latestPrice: latestTick?.price ?? null,
         latestTickReceivedAt: latestTick?.receivedAtEpochMs ?? null,
-        latestTickAgeMs: health.latestTickAgeMs,
+        latestTickAgeMs: currentHealth.latestTickAgeMs,
         latestSourceQuality: latestTick?.sourceQuality ?? null,
         latestProtocolVerificationId: latestTick?.protocolVerificationId ?? null,
         protocolRegistryVersion: PROTOCOL_VERIFICATION_REGISTRY_VERSION,
@@ -82,13 +127,20 @@ export function computeAnalytics(snapshot, health) {
         latestStructureRegime: latestDecision?.structureRegime ?? null,
         latestVolatilityRegime: latestDecision?.volatilityRegime ?? null,
         latestDecisionOperationalDataState: latestDecision?.operationalDataState ?? null,
-        currentOperationalDataState: health.state,
-        currentOperationalDataReason: health.reason,
-        watchdogAssessedAt: health.assessedAt,
-        healthDegradedAfterMs: health.thresholds.degradedAfterMs,
-        healthStaleAfterMs: health.thresholds.staleAfterMs,
-        healthDataUnavailableAfterMs: health.thresholds.dataUnavailableAfterMs,
+        currentOperationalDataState: currentHealth.state,
+        currentOperationalDataReason: currentHealth.reason,
+        watchdogAssessedAt: currentHealth.assessedAt,
+        healthDegradedAfterMs: currentHealth.thresholds.degradedAfterMs,
+        healthStaleAfterMs: currentHealth.thresholds.staleAfterMs,
+        healthDataUnavailableAfterMs: currentHealth.thresholds.dataUnavailableAfterMs,
+        assetFeedHealth,
+        healthyAssetFeedCount: assetFeedHealth.filter((item) => item.state === 'HEALTHY').length,
+        degradedAssetFeedCount: assetFeedHealth.filter((item) => item.state === 'DEGRADED').length,
+        staleAssetFeedCount: assetFeedHealth.filter((item) => item.state === 'STALE').length,
+        unavailableAssetFeedCount: assetFeedHealth.filter((item) => item.state === 'DATA_UNAVAILABLE').length,
         latestModelScore: latestDecision?.modelScore ?? null,
         latestBlockers: latestDecision?.blockers ?? [],
+        latestArbitrationStatus: latestDecision?.arbitrationStatus ?? null,
+        captureTransport,
     };
 }

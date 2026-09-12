@@ -48,6 +48,6 @@ export class MemoryJournal implements JournalRepository {
   }
 
   private candleKey(candle: Candle): string {
-    return `${candle.canonicalAssetId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
+    return `${candle.canonicalAssetId}:${candle.feedId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
   }
 }

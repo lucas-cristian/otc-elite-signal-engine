@@ -47,8 +47,9 @@ export type CandleLifecycle = 'FORMING' | 'CLOSED' | 'EMPTY_INTERVAL';
 export type CandleQuality = 'CLEAN' | 'GAP_AFFECTED';
 
 export interface Candle {
-  candleSchemaVersion: '2';
+  candleSchemaVersion: '3';
   canonicalAssetId: string;
+  feedId: string;
   timeframe: Timeframe;
   startTimestamp: number;
   endTimestamp: number;

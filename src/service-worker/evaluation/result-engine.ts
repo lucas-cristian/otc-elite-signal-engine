@@ -105,14 +105,14 @@ export class ResultEngine {
     };
   }
 
-  public timeout(signal: SignalRecord, nowMs: number, reason: 'EXPIRY_TIMEOUT' | 'DATA_UNAVAILABLE' = 'EXPIRY_TIMEOUT'): ResultRecord | null {
+  public timeout(signal: SignalRecord, nowMs: number, reason: 'EXPIRY_TIMEOUT' | 'ASSET_FEED_LOST' | 'DATA_UNAVAILABLE' = 'EXPIRY_TIMEOUT'): ResultRecord | null {
     if (nowMs <= signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs) return null;
     return this.unresolved(signal, reason, nowMs, null);
   }
 
   private unresolved(
     signal: SignalRecord,
-    reason: 'EXPIRY_TIMEOUT' | 'MARKET_SOURCE_INCOMPATIBLE' | 'DATA_UNAVAILABLE',
+    reason: 'EXPIRY_TIMEOUT' | 'ASSET_FEED_LOST' | 'MARKET_SOURCE_INCOMPATIBLE' | 'DATA_UNAVAILABLE',
     evaluatedAt: number,
     tick: Tick | null,
   ): ResultRecord {

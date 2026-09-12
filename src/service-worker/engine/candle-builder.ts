@@ -19,6 +19,7 @@ export class CandleBuilder {
 
   public constructor(
     private readonly canonicalAssetId: string,
+    private readonly feedId: string,
     private readonly timeframe: Timeframe,
     private readonly emitter: CandleEmitter,
   ) {}
@@ -77,8 +78,9 @@ export class CandleBuilder {
 
   private emitEmpty(start: number): void {
     this.emitter({
-      candleSchemaVersion: '2',
+      candleSchemaVersion: '3',
       canonicalAssetId: this.canonicalAssetId,
+      feedId: this.feedId,
       timeframe: this.timeframe,
       startTimestamp: start,
       endTimestamp: alignToCandleEnd(start, this.timeframe),
@@ -95,8 +97,9 @@ export class CandleBuilder {
 
   private toCandle(state: CandleState, lifecycle: Candle['lifecycle']): Candle {
     return {
-      candleSchemaVersion: '2',
+      candleSchemaVersion: '3',
       canonicalAssetId: this.canonicalAssetId,
+      feedId: this.feedId,
       timeframe: this.timeframe,
       startTimestamp: state.start,
       endTimestamp: alignToCandleEnd(state.start, this.timeframe),

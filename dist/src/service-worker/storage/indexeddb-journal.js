@@ -14,7 +14,7 @@ function transactionDone(transaction) {
 }
 export async function openJournalDatabase() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('otc-elite-signal-engine', 5);
+        const request = indexedDB.open('otc-elite-signal-engine', 6);
         request.onupgradeneeded = () => {
             const db = request.result;
             for (const name of Array.from(db.objectStoreNames))
@@ -40,7 +40,7 @@ export class IndexedDbJournal {
     appendTick(value) { return this.appendImmutable('ticks', value.tickId, value); }
     appendPayoutSnapshot(value) { const key = `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`; return this.appendImmutable('payoutSnapshots', key, { key, payout: value }); }
     appendCandle(value) {
-        const key = `${value.canonicalAssetId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
+        const key = `${value.canonicalAssetId}:${value.feedId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
         return this.appendImmutable('candles', key, { key, candle: value });
     }
     appendDecision(value) { return this.appendImmutable('decisions', value.decisionId, value); }

@@ -42,7 +42,7 @@ function tick(receivedAtEpochMs: number): Tick {
 
 function pendingDecision(): DecisionRecord {
   return {
-    decisionSchemaVersion: '3',
+    decisionSchemaVersion: '4',
     decisionId: 'decision-pending',
     decisionGranularityKey: 'granularity',
     executionMode: 'LIVE',
@@ -63,6 +63,7 @@ function pendingDecision(): DecisionRecord {
     featureSnapshot: null,
     evidenceSnapshot: null,
     sourceQuality: 'VERIFIED',
+    sourceFeedId: 'api-us-south.po.market',
     sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM',
     eventIntegrity: 'VALID',
     operationalDataState: 'HEALTHY',
@@ -70,18 +71,20 @@ function pendingDecision(): DecisionRecord {
     expirationSeconds: 60,
     configHash: 'config',
     configSnapshot: {},
-    appVersion: '1.4.0',
-    marketEpisodeId: null,
+    appVersion: '1.5.0',
+    marketEpisodeId: 'episode-pending',
+    arbitrationStatus: 'PRIMARY',
     createdAt: 1_000,
   };
 }
 
 function pendingSignal(): SignalRecord {
   return {
-    signalSchemaVersion: '2',
+    signalSchemaVersion: '3',
     signalId: 'signal-pending',
     signalFingerprint: 'fingerprint',
     decisionId: 'decision-resolved',
+    marketEpisodeId: 'episode-signal',
     executionMode: 'LIVE',
     canonicalAssetId: 'EURUSDOTC',
     direction: 'CALL',

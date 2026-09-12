@@ -15,6 +15,13 @@ if (!Array.isArray(manifest.host_permissions) || !manifest.host_permissions.ever
   throw new Error('host_permissions must be Pocket Option only');
 }
 if (!Array.isArray(manifest.permissions) || !manifest.permissions.includes('alarms')) throw new Error('alarms permission is required for MV3 data-health watchdog');
+
+const contentBundle = readFileSync('dist/content.js', 'utf8');
+if (contentBundle.includes('setTimeout(')) throw new Error('production content transport must not depend on setTimeout');
+if (!contentBundle.includes('runtime.connect')) throw new Error('production content transport must use runtime.Port');
+const backgroundBundle = readFileSync('dist/src/service-worker/core/background.js', 'utf8');
+if (!backgroundBundle.includes('autoDiscardable')) throw new Error('source-tab auto-discard mitigation missing');
+
 const resources = (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []);
 if (!resources.includes('src/common/protocol/protocol-verification-registry.js')) throw new Error('protocol verification registry must be web-accessible to MAIN world parser');
 for (const artifactPath of required) {

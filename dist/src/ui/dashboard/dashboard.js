@@ -19,6 +19,16 @@ function age(value) {
 function payout(value) {
     return value === null || value === undefined ? 'UNKNOWN' : percent(value);
 }
+function performance(items) {
+    if (!items || items.length === 0)
+        return 'N/A';
+    return items.map((item) => `${item.key}: ${item.correct}/${item.resolved} (${percent(item.accuracy)})`).join(' | ');
+}
+function assetHealth(items) {
+    if (!items || items.length === 0)
+        return ['Tracked asset/feed health: N/A'];
+    return items.map((item) => `${item.canonicalAssetId} @ ${item.feedId}: ${item.state} (${item.reason}, age ${age(item.latestTickAgeMs)})`);
+}
 async function load() {
     if (loading)
         return;
@@ -54,6 +64,17 @@ async function load() {
             `Protocol registry: ${response.protocolRegistryVersion ?? 'N/A'}`,
             `Tick integrity: ${response.latestTickIntegrity ?? 'N/A'}`,
             '',
+            'CAPTURE RESILIENCE',
+            `Transport connected: ${response.captureTransport?.connected ?? false}`,
+            `Source tab visibility: ${response.captureTransport?.visibility ?? 'unknown'}`,
+            `Source tab frozen: ${response.captureTransport?.frozen ?? 'unknown'}`,
+            `Source tab discarded: ${response.captureTransport?.discarded ?? 'unknown'}`,
+            `Source tab auto-discardable: ${response.captureTransport?.autoDiscardable ?? 'unknown'}`,
+            `Last semantic transport event: ${timestamp(response.captureTransport?.lastSemanticEventAt)}`,
+            `Last lifecycle event: ${timestamp(response.captureTransport?.lastLifecycleEventAt)}`,
+            `Last lifecycle reason: ${response.captureTransport?.lastLifecycleReason ?? 'N/A'}`,
+            `Transport mitigation: ${response.captureTransport?.mitigation ?? 'N/A'}`,
+            '',
             'LIVE DATA HEALTH WATCHDOG',
             `Current operational state: ${response.currentOperationalDataState ?? 'N/A'}`,
             `Reason: ${response.currentOperationalDataReason ?? 'N/A'}`,
@@ -61,10 +82,18 @@ async function load() {
             `Degraded after: ${age(response.healthDegradedAfterMs)}`,
             `Stale after: ${age(response.healthStaleAfterMs)}`,
             `Data unavailable after: ${age(response.healthDataUnavailableAfterMs)}`,
+            `Asset/feed states: HEALTHY ${response.healthyAssetFeedCount ?? 0}, DEGRADED ${response.degradedAssetFeedCount ?? 0}, STALE ${response.staleAssetFeedCount ?? 0}, DATA_UNAVAILABLE ${response.unavailableAssetFeedCount ?? 0}`,
+            ...assetHealth(response.assetFeedHealth),
             '',
             'DECISION PIPELINE',
             `Decisions: ${response.decisionCount ?? 0}`,
-            `CALL/PUT decisions: ${response.callPutDecisionCount ?? 0}`,
+            `Raw eligible candidate decisions: ${response.rawCandidateDecisionCount ?? 0}`,
+            `Independent market episodes: ${response.marketEpisodeCount ?? 0}`,
+            `Active market episodes: ${response.activeEpisodeCount ?? 0}`,
+            `Primary episode decisions: ${response.primaryEpisodeDecisionCount ?? 0}`,
+            `Suppressed correlated decisions: ${response.suppressedCorrelatedDecisionCount ?? 0}`,
+            `Suppressed arbitration conflicts: ${response.suppressedConflictDecisionCount ?? 0}`,
+            `CALL/PUT decisions after arbitration: ${response.callPutDecisionCount ?? 0}`,
             `Entry resolved: ${response.entryResolvedCount ?? 0}`,
             `Entry unresolved: ${response.entryUnresolvedCount ?? 0}`,
             `Entry pending: ${response.pendingEntryCount ?? 0}`,
@@ -77,12 +106,16 @@ async function load() {
             `Structure regime: ${response.latestStructureRegime ?? 'N/A'}`,
             `Volatility regime: ${response.latestVolatilityRegime ?? 'N/A'}`,
             `Decision-time data state: ${response.latestDecisionOperationalDataState ?? 'N/A'}`,
+            `Latest arbitration: ${response.latestArbitrationStatus ?? 'N/A'}`,
             `Latest blockers: ${blockers}`,
             '',
             'REFERENCE DIRECTIONAL EVALUATION',
+            `Independent resolved episode sample: ${response.independentEpisodeResolvedSampleSize ?? response.resolvedDirectionalSampleSize ?? 0}`,
             `Resolved directional sample: ${response.resolvedDirectionalSampleSize ?? 0}`,
             `Directional accuracy: ${percent(response.directionalAccuracy)}`,
             `Wilson 95% interval: ${wilson}`,
+            `By timeframe: ${performance(response.timeframePerformance)}`,
+            `By contributing strategy: ${performance(response.strategyPerformance)}`,
             '',
             'ECONOMIC EVALUATION (FAIL-CLOSED)',
             `Latest payout: ${payout(response.latestPayoutRate)}`,

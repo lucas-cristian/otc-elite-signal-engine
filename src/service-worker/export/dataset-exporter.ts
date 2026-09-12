@@ -1,7 +1,9 @@
 import { canonicalEntityHash, canonicalJson } from '../../common/hashing/canonical-hash.js';
 import { sha256 } from '../../common/hashing/sha256.js';
-import type { DatasetManifest, ScientificDataset } from '../../common/models/dataset-types.js';
+import type { DatasetAssetFeedHealth, DatasetManifest, ScientificDataset } from '../../common/models/dataset-types.js';
+import type { CaptureTransportSnapshot } from '../../common/models/runtime-telemetry.js';
 import { PROTOCOL_VERIFICATION_REGISTRY_VERSION } from '../../common/protocol/protocol-verification-registry.js';
+import type { AssetFeedHealthSnapshot } from '../core/quant-pipeline.js';
 import type { OperationalHealthSnapshot } from '../core/data-health.js';
 import type { JournalRepository } from '../storage/journal-repository.js';
 
@@ -13,6 +15,8 @@ export interface ExportMetadata {
   gitWorkingTreeClean: boolean | null;
   createdAt: number;
   operationalHealth: OperationalHealthSnapshot;
+  assetFeedHealth: AssetFeedHealthSnapshot[];
+  captureTransport: CaptureTransportSnapshot;
 }
 
 export class DatasetExporter {
@@ -36,8 +40,17 @@ export class DatasetExporter {
       ...snapshot.ticks.flatMap((tick) => tick.protocolVerificationId === null ? [] : [tick.protocolVerificationId]),
       ...snapshot.payoutSnapshots.flatMap((payout) => payout.protocolVerificationId === null ? [] : [payout.protocolVerificationId]),
     ])].sort();
+    const assetFeedHealthAtExport: DatasetAssetFeedHealth[] = metadata.assetFeedHealth.map((item) => ({
+      canonicalAssetId: item.canonicalAssetId,
+      feedId: item.feedId,
+      state: item.state,
+      reason: item.reason,
+      assessedAt: item.assessedAt,
+      latestTickReceivedAt: item.latestTickReceivedAt,
+      latestTickAgeMs: item.latestTickAgeMs,
+    }));
     const manifestBase = {
-      datasetSchemaVersion: '3' as const,
+      datasetSchemaVersion: '4' as const,
       createdAt: metadata.createdAt,
       appVersion: metadata.appVersion,
       buildId: metadata.buildId,
@@ -49,17 +62,19 @@ export class DatasetExporter {
       exportOperationalDataState: metadata.operationalHealth.state,
       exportOperationalDataReason: metadata.operationalHealth.reason,
       latestTickAgeMsAtExport: metadata.operationalHealth.latestTickAgeMs,
+      assetFeedHealthAtExport,
+      captureTransportAtExport: metadata.captureTransport,
       tickCount: snapshot.ticks.length,
       decisionCount: snapshot.decisions.length,
+      rawCandidateDecisionCount: snapshot.decisions.filter((decision) => decision.arbitrationStatus !== 'NOT_APPLICABLE').length,
+      marketEpisodeCount: new Set(snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'PRIMARY' && decision.marketEpisodeId !== null).map((decision) => decision.marketEpisodeId)).size,
+      suppressedCorrelatedDecisionCount: snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'SUPPRESSED_CORRELATED' || decision.arbitrationStatus === 'SUPPRESSED_ACTIVE_EPISODE').length,
       signalCount: snapshot.signals.length,
       resultCount: snapshot.results.length,
       configHashes,
       checksumSha256,
     };
-    const manifest: DatasetManifest = {
-      ...manifestBase,
-      datasetId: canonicalEntityHash('DATASET', 3, manifestBase),
-    };
+    const manifest: DatasetManifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 4, manifestBase) };
     return { manifest, ...body };
   }
 }

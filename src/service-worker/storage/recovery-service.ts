@@ -6,6 +6,7 @@ export interface RecoveryState {
   pendingEntries: DecisionRecord[];
   pendingResults: SignalRecord[];
   latestTick: Tick | null;
+  latestTicksByAssetFeed: Tick[];
   latestPayoutSnapshots: PayoutSnapshot[];
 }
 
@@ -20,6 +21,12 @@ export class RecoveryService {
       (latest, tick) => latest === null || tick.receivedAtEpochMs > latest.receivedAtEpochMs ? tick : latest,
       null as Tick | null,
     );
+    const latestTicks = new Map<string, Tick>();
+    for (const tick of snapshot.ticks) {
+      const key = `${tick.marketSourceIdentity.canonicalAssetId}::${tick.marketSourceIdentity.feedId}`;
+      const current = latestTicks.get(key);
+      if (!current || tick.receivedAtEpochMs > current.receivedAtEpochMs) latestTicks.set(key, tick);
+    }
     const payouts = new Map<string, PayoutSnapshot>();
     for (const payout of snapshot.payoutSnapshots) {
       const key = `${payout.canonicalAssetId}:${payout.feedId ?? 'UNKNOWN'}`;
@@ -32,6 +39,7 @@ export class RecoveryService {
       ),
       pendingResults: snapshot.signals.filter((signal) => !resultSignalIds.has(signal.signalId)),
       latestTick,
+      latestTicksByAssetFeed: [...latestTicks.values()],
       latestPayoutSnapshots: [...payouts.values()],
     };
   }

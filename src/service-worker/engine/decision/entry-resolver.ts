@@ -39,6 +39,8 @@ export class EntryResolver {
       return { entry: this.unresolved(decision, 'ENTRY_TIMEOUT', tick.eventTimestampEpochMs), signal: null };
     }
     if (tick.marketSourceIdentity.canonicalAssetId !== decision.canonicalAssetId) return null;
+    if (decision.sourceFeedId === null || tick.marketSourceIdentity.feedId !== decision.sourceFeedId) return null;
+    if (decision.marketEpisodeId === null || decision.arbitrationStatus !== 'PRIMARY') return null;
     if (tick.integrity !== 'VALID' || tick.sourceQuality !== 'VERIFIED' || tick.protocolVerificationId === null) return null;
     const entryPayload = {
       decisionId: decision.decisionId,
@@ -77,10 +79,11 @@ export class EntryResolver {
       entryTickId: tick.tickId,
     });
     const signal: SignalRecord = {
-      signalSchemaVersion: '2',
+      signalSchemaVersion: '3',
       signalId,
       signalFingerprint: fingerprint,
       decisionId: decision.decisionId,
+      marketEpisodeId: decision.marketEpisodeId,
       executionMode: decision.executionMode,
       canonicalAssetId: decision.canonicalAssetId,
       direction: decision.finalDecision,

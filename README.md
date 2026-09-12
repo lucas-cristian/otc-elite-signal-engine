@@ -6,7 +6,7 @@ OTC Elite Signal Engine is a signal-only quantitative research extension for Chr
 
 The extension never clicks CALL/PUT, never sends orders, never executes trades, and never represents reference-feed outcomes as realized P&L. Protocol verification is independent from strategy profitability or scientific acceptance.
 
-Release 1.4.0 freezes the exact Socket.IO binary protocol evidence captured on 2026-09-12 for `demo-api-eu.po.market`, `api-us-north.po.market`, and `api-us-south.po.market`. Verification is based on the exact host + event + parser schema + payload shape tuple, not on hostname alone. Unregistered `*.po.market` feeds remain `INFERRED` and fail closed before CALL/PUT.
+Release 1.5.0 freezes the exact Socket.IO binary protocol evidence captured on 2026-09-12 for `demo-api-eu.po.market`, `api-us-north.po.market`, and `api-us-south.po.market`. Verification is based on the exact host + event + parser schema + payload shape tuple, not on hostname alone. Unregistered `*.po.market` feeds remain `INFERRED` and fail closed before CALL/PUT.
 
 ## Verified protocol
 
@@ -93,7 +93,7 @@ Raw production WebSocket payloads never cross the MAIN → ISOLATED boundary. Se
 
 ## Data-health watchdog
 
-Release 1.4.0 separates the current wall-clock health of the feed from the historical state stored on the latest decision. Health changes even if no new tick arrives.
+Release 1.5.0 separates the current wall-clock health of the feed from the historical state stored on the latest decision. Health changes even if no new tick arrives.
 
 Frozen defaults:
 
@@ -144,7 +144,7 @@ The Feature Engine includes momentum, velocity, acceleration, volatility, candle
 
 Strategies are independent and regime-aware: Momentum, Reversal, Exhaustion, Breakout and Rejection. Correlated evidence is grouped into capped evidence families. `modelScore` is not a probability. `calibratedProbability` remains `null` until valid OOS calibration exists.
 
-The default minimum model score remains `0.35`; release 1.4.0 does not lower it to manufacture more signals.
+The default minimum model score remains `0.35`; release 1.5.0 does not lower it to manufacture more signals.
 
 ## Journal and recovery
 
@@ -200,7 +200,7 @@ npm run verify
 
 ## Validation status
 
-Release 1.4.0 validation on 2026-09-12:
+Release 1.5.0 validation on 2026-09-12:
 
 - TypeScript strict typecheck: PASS
 - Unit/invariant tests: 23/23 PASS
@@ -224,3 +224,14 @@ Release 1.4.0 validation on 2026-09-12:
 - No auto-trading, auto-click or broker order-execution path exists
 
 Protocol verification is not evidence of trading profitability. Strategy acceptance still requires sufficient OOS/holdout evidence under the frozen scientific protocol.
+
+
+## Focus-resilient capture (1.5.0)
+
+The ISOLATED transport no longer depends on `setTimeout` for market delivery. Semantic events are delivered through a long-lived `chrome.runtime.Port` and flushed with `queueMicrotask`, so background timer throttling does not delay the market pipeline. The service worker marks source tabs `autoDiscardable = false` and records Chrome tab lifecycle telemetry (`visibility`, `frozen`, `discarded`, transport connection and last semantic event). A truly frozen tab cannot execute page/content-script handlers; in that state the engine fails closed through the per-asset/feed watchdog instead of reporting stale data as healthy.
+
+## Asset/feed health and independent market episodes (1.5.0)
+
+Health is tracked by `(canonicalAssetId, feedId)`. Activity on EURUSD cannot keep EURJPY healthy. Candles are also feed-scoped. Eligible multi-timeframe decisions are arbitrated into a single independent `marketEpisodeId`; one PRIMARY decision can become a signal and correlated/overlapping decisions are retained as NO_TRADE audit records with explicit arbitration blockers. The score threshold remains `0.35`.
+
+Analytics reports raw candidate decisions separately from independent market episodes, plus performance by primary timeframe and contributing strategy.

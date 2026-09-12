@@ -1,12 +1,14 @@
 "use strict";
 const OTC_BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
 const OTC_CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
+const OTC_PORT_NAME = 'OTC_ELITE_SEMANTIC_STREAM_V1';
 const otcPageOrigin = window.location.origin;
 const otcPageOriginUsable = otcPageOrigin !== 'null' && otcPageOrigin.startsWith('https://');
 const otcPageSessionId = crypto.randomUUID();
 const otcConnections = new Map();
-const otcBatch = [];
-let otcFlushTimer = null;
+const otcOutbox = [];
+let otcPort = null;
+let otcFlushQueued = false;
 function otcIsRecord(value) {
     return typeof value === 'object' && value !== null;
 }
@@ -70,17 +72,47 @@ function otcIsSemanticPayoutEvent(value) {
         && ((payout.quality === 'VERIFIED' && typeof payout.protocolVerificationId === 'string' && payout.protocolVerificationId.length > 0)
             || (payout.quality !== 'VERIFIED' && payout.protocolVerificationId === null));
 }
-function otcScheduleFlush() {
-    if (otcFlushTimer !== null)
+function otcConnectPort() {
+    if (otcPort)
+        return otcPort;
+    const port = chrome.runtime.connect({ name: OTC_PORT_NAME });
+    otcPort = port;
+    port.onDisconnect.addListener(() => {
+        if (otcPort === port)
+            otcPort = null;
+        if (otcOutbox.length > 0)
+            otcQueueFlush();
+    });
+    otcSendLifecycle('PORT_CONNECTED');
+    return port;
+}
+function otcPostPort(message) {
+    try {
+        otcConnectPort().postMessage(message);
+        return true;
+    }
+    catch {
+        otcPort = null;
+        return false;
+    }
+}
+function otcQueueFlush() {
+    if (otcFlushQueued)
         return;
-    otcFlushTimer = window.setTimeout(otcFlush, 50);
+    otcFlushQueued = true;
+    queueMicrotask(otcFlush);
 }
 function otcFlush() {
-    otcFlushTimer = null;
-    if (otcBatch.length === 0)
+    otcFlushQueued = false;
+    if (otcOutbox.length === 0)
         return;
-    const payload = otcBatch.splice(0, otcBatch.length);
-    void chrome.runtime.sendMessage({ type: 'SEMANTIC_EVENT_BATCH', payload });
+    const payload = otcOutbox.splice(0, Math.min(otcOutbox.length, 100));
+    if (!otcPostPort({ type: 'SEMANTIC_EVENT_BATCH', payload, sentAt: Date.now() })) {
+        otcOutbox.unshift(...payload);
+        return;
+    }
+    if (otcOutbox.length > 0)
+        otcQueueFlush();
 }
 function otcPushSemantic(event) {
     const connectionId = event.connectionId;
@@ -95,12 +127,22 @@ function otcPushSemantic(event) {
             break;
         state.pending.delete(state.nextSequence);
         state.nextSequence += 1;
-        otcBatch.push({ pageSessionId: otcPageSessionId, event: ordered });
-        if (otcBatch.length >= 50)
-            otcFlush();
-        else
-            otcScheduleFlush();
+        otcOutbox.push({ pageSessionId: otcPageSessionId, event: ordered });
     }
+    otcQueueFlush();
+}
+function otcSendLifecycle(reason) {
+    const visibility = document.visibilityState;
+    otcPostPort({
+        type: 'SOURCE_TAB_LIFECYCLE',
+        payload: {
+            pageSessionId: otcPageSessionId,
+            reason,
+            visibility,
+            hidden: document.hidden,
+            capturedAt: Date.now(),
+        },
+    });
 }
 window.addEventListener('message', (messageEvent) => {
     if (!otcPageOriginUsable || messageEvent.source !== window || messageEvent.origin !== otcPageOrigin)
@@ -114,6 +156,7 @@ window.addEventListener('message', (messageEvent) => {
             otcConnections.set(connectionId, { nextSequence: 0, pending: new Map() });
         else
             otcConnections.delete(connectionId);
+        otcPostPort({ type: 'SOURCE_CONNECTION_EVENT', payload: { pageSessionId: otcPageSessionId, event: payload, capturedAt: Date.now() } });
         return;
     }
     if (otcIsSemanticPriceEvent(payload) || otcIsSemanticPayoutEvent(payload)) {
@@ -121,9 +164,16 @@ window.addEventListener('message', (messageEvent) => {
         return;
     }
     if (otcIsDiscoveryObservation(payload))
-        void chrome.runtime.sendMessage({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
+        otcPostPort({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
 });
+document.addEventListener('visibilitychange', () => otcSendLifecycle('VISIBILITY_CHANGE'));
+window.addEventListener('pageshow', () => otcSendLifecycle('PAGE_SHOW'));
+window.addEventListener('pagehide', () => otcSendLifecycle('PAGE_HIDE'));
+document.addEventListener('freeze', () => otcSendLifecycle('PAGE_FREEZE'));
+document.addEventListener('resume', () => otcSendLifecycle('PAGE_RESUME'));
 if (otcPageOriginUsable) {
+    otcConnectPort();
+    otcSendLifecycle('CONTENT_SCRIPT_READY');
     const otcBridgeScript = document.createElement('script');
     otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
     otcBridgeScript.type = 'module';
