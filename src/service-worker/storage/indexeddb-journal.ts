@@ -1,4 +1,6 @@
 import { canonicalJson } from '../../common/hashing/canonical-hash.js';
+import type { FeedContinuityEvent } from '../../common/models/feed-continuity.js';
+import type { TransportEventRecord } from '../../common/models/runtime-telemetry.js';
 import type { Candle, PayoutSnapshot, Tick } from '../../common/models/types.js';
 import type {
   DecisionRecord,
@@ -11,7 +13,7 @@ import type { JournalRepository, JournalSnapshot } from './journal-repository.js
 
 interface StoredCandle { key: string; candle: Candle; }
 
-type StoreName = 'ticks' | 'payoutSnapshots' | 'candles' | 'decisions' | 'entryResolutions' | 'decisionSignalLinks' | 'signals' | 'results';
+type StoreName = 'ticks' | 'payoutSnapshots' | 'candles' | 'decisions' | 'entryResolutions' | 'decisionSignalLinks' | 'signals' | 'results' | 'continuityEvents' | 'transportEvents';
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -30,7 +32,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 
 export async function openJournalDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('otc-elite-signal-engine', 6);
+    const request = indexedDB.open('otc-elite-signal-engine', 7);
     request.onupgradeneeded = () => {
       const db = request.result;
       for (const name of Array.from(db.objectStoreNames)) db.deleteObjectStore(name);
@@ -42,6 +44,8 @@ export async function openJournalDatabase(): Promise<IDBDatabase> {
       db.createObjectStore('decisionSignalLinks', { keyPath: 'decisionId' });
       db.createObjectStore('signals', { keyPath: 'signalId' });
       db.createObjectStore('results', { keyPath: 'signalId' });
+      db.createObjectStore('continuityEvents', { keyPath: 'continuityEventId' });
+      db.createObjectStore('transportEvents', { keyPath: 'transportEventId' });
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Unable to open IndexedDB'));
@@ -54,7 +58,7 @@ export class IndexedDbJournal implements JournalRepository {
   public appendTick(value: Tick): Promise<void> { return this.appendImmutable('ticks', value.tickId, value); }
   public appendPayoutSnapshot(value: PayoutSnapshot): Promise<void> { const key = `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`; return this.appendImmutable('payoutSnapshots', key, { key, payout: value }); }
   public appendCandle(value: Candle): Promise<void> {
-    const key = `${value.canonicalAssetId}:${value.feedId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
+    const key = `${value.canonicalAssetId}:${value.feedId}:${value.feedEpochId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
     return this.appendImmutable('candles', key, { key, candle: value });
   }
   public appendDecision(value: DecisionRecord): Promise<void> { return this.appendImmutable('decisions', value.decisionId, value); }
@@ -62,9 +66,11 @@ export class IndexedDbJournal implements JournalRepository {
   public appendDecisionSignalLink(value: DecisionSignalLink): Promise<void> { return this.appendImmutable('decisionSignalLinks', value.decisionId, value); }
   public appendSignal(value: SignalRecord): Promise<void> { return this.appendImmutable('signals', value.signalId, value); }
   public appendResult(value: ResultRecord): Promise<void> { return this.appendImmutable('results', value.signalId, value); }
+  public appendContinuityEvent(value: FeedContinuityEvent): Promise<void> { return this.appendImmutable('continuityEvents', value.continuityEventId, value); }
+  public appendTransportEvent(value: TransportEventRecord): Promise<void> { return this.appendImmutable('transportEvents', value.transportEventId, value); }
 
   public async snapshot(): Promise<JournalSnapshot> {
-    const [ticks, storedPayouts, storedCandles, decisions, entries, links, signals, results] = await Promise.all([
+    const [ticks, storedPayouts, storedCandles, decisions, entries, links, signals, results, continuityEvents, transportEvents] = await Promise.all([
       this.all<Tick>('ticks'),
       this.all<{ key: string; payout: PayoutSnapshot }>('payoutSnapshots'),
       this.all<StoredCandle>('candles'),
@@ -73,6 +79,8 @@ export class IndexedDbJournal implements JournalRepository {
       this.all<DecisionSignalLink>('decisionSignalLinks'),
       this.all<SignalRecord>('signals'),
       this.all<ResultRecord>('results'),
+      this.all<FeedContinuityEvent>('continuityEvents'),
+      this.all<TransportEventRecord>('transportEvents'),
     ]);
     return {
       ticks,
@@ -83,6 +91,8 @@ export class IndexedDbJournal implements JournalRepository {
       decisionSignalLinks: links,
       signals,
       results,
+      continuityEvents,
+      transportEvents,
     };
   }
 

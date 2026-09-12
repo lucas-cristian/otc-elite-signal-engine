@@ -7,15 +7,36 @@ const otcPageOriginUsable = otcPageOrigin !== 'null' && otcPageOrigin.startsWith
 const otcPageSessionId = crypto.randomUUID();
 const otcConnections = new Map();
 const otcOutbox = [];
+const otcRecovery = {
+    endpoint: null,
+    auth: null,
+    subscriptions: new Map(),
+};
 let otcPort = null;
 let otcFlushQueued = false;
+let otcPortReconnectQueued = false;
 function otcIsRecord(value) {
     return typeof value === 'object' && value !== null;
 }
 function otcIsConnectionEvent(value) {
     if (!otcIsRecord(value) || value.type !== 'CONNECTION' || typeof value.connectionId !== 'string')
         return false;
+    if (value.feedHost !== null && typeof value.feedHost !== 'string')
+        return false;
     return value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR';
+}
+function otcIsRecoveryContext(value) {
+    if (!otcIsRecord(value) || value.type !== 'RECOVERY_CONTEXT' || typeof value.connectionId !== 'string')
+        return false;
+    if (typeof value.endpointUrl !== 'string' || typeof value.capturedAt !== 'number')
+        return false;
+    if (value.kind !== 'MARKET_ENDPOINT' && value.kind !== 'AUTH_PACKET' && value.kind !== 'SUBSCRIPTION_PACKET')
+        return false;
+    if (value.packet !== null && typeof value.packet !== 'string')
+        return false;
+    if (value.socketIoEventName !== null && typeof value.socketIoEventName !== 'string')
+        return false;
+    return true;
 }
 function otcIsDiscoveryObservation(value) {
     return otcIsRecord(value)
@@ -72,6 +93,60 @@ function otcIsSemanticPayoutEvent(value) {
         && ((payout.quality === 'VERIFIED' && typeof payout.protocolVerificationId === 'string' && payout.protocolVerificationId.length > 0)
             || (payout.quality !== 'VERIFIED' && payout.protocolVerificationId === null));
 }
+function otcRecoverySubscriptionKey(event) {
+    const eventName = event.socketIoEventName;
+    if (typeof eventName !== 'string')
+        return null;
+    if (eventName !== 'subscribeSymbol')
+        return eventName;
+    const packet = event.packet;
+    if (typeof packet !== 'string' || !packet.startsWith('42['))
+        return eventName;
+    try {
+        const parsed = JSON.parse(packet.slice(2));
+        if (!Array.isArray(parsed) || typeof parsed[1] !== 'string')
+            return eventName;
+        return `${eventName}:${parsed[1]}`;
+    }
+    catch {
+        return eventName;
+    }
+}
+function otcRecoverySnapshot() {
+    if (!otcRecovery.endpoint)
+        return null;
+    return {
+        pageSessionId: otcPageSessionId,
+        endpoint: otcRecovery.endpoint,
+        auth: otcRecovery.auth,
+        subscriptions: [...otcRecovery.subscriptions.values()],
+    };
+}
+function otcReplayRecoveryContext(port) {
+    const snapshot = otcRecoverySnapshot();
+    if (!snapshot)
+        return;
+    try {
+        port.postMessage({ type: 'SHADOW_RECOVERY_SNAPSHOT', payload: snapshot });
+    }
+    catch {
+        // The port disconnect handler will retry by establishing a fresh runtime.Port.
+    }
+}
+function otcQueuePortReconnect() {
+    if (otcPortReconnectQueued)
+        return;
+    otcPortReconnectQueued = true;
+    queueMicrotask(() => {
+        otcPortReconnectQueued = false;
+        try {
+            otcConnectPort();
+        }
+        catch {
+            // A future semantic/lifecycle event will retry without relying on a page timer.
+        }
+    });
+}
 function otcConnectPort() {
     if (otcPort)
         return otcPort;
@@ -80,9 +155,11 @@ function otcConnectPort() {
     port.onDisconnect.addListener(() => {
         if (otcPort === port)
             otcPort = null;
+        otcQueuePortReconnect();
         if (otcOutbox.length > 0)
             otcQueueFlush();
     });
+    otcReplayRecoveryContext(port);
     otcSendLifecycle('PORT_CONNECTED');
     return port;
 }
@@ -93,6 +170,7 @@ function otcPostPort(message) {
     }
     catch {
         otcPort = null;
+        otcQueuePortReconnect();
         return false;
     }
 }
@@ -131,6 +209,19 @@ function otcPushSemantic(event) {
     }
     otcQueueFlush();
 }
+function otcRememberRecoveryContext(event) {
+    const enriched = { ...event, pageSessionId: otcPageSessionId };
+    if (event.kind === 'MARKET_ENDPOINT')
+        otcRecovery.endpoint = enriched;
+    if (event.kind === 'AUTH_PACKET')
+        otcRecovery.auth = enriched;
+    if (event.kind === 'SUBSCRIPTION_PACKET') {
+        const key = otcRecoverySubscriptionKey(event);
+        if (key !== null)
+            otcRecovery.subscriptions.set(key, enriched);
+    }
+    otcPostPort({ type: 'SHADOW_RECOVERY_CONTEXT', payload: enriched });
+}
 function otcSendLifecycle(reason) {
     const visibility = document.visibilityState;
     otcPostPort({
@@ -157,6 +248,10 @@ window.addEventListener('message', (messageEvent) => {
         else
             otcConnections.delete(connectionId);
         otcPostPort({ type: 'SOURCE_CONNECTION_EVENT', payload: { pageSessionId: otcPageSessionId, event: payload, capturedAt: Date.now() } });
+        return;
+    }
+    if (otcIsRecoveryContext(payload)) {
+        otcRememberRecoveryContext(payload);
         return;
     }
     if (otcIsSemanticPriceEvent(payload) || otcIsSemanticPayoutEvent(payload)) {

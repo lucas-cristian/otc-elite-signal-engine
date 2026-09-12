@@ -2,19 +2,25 @@ import { alignToCandleEnd, alignToCandleStart, TIMEFRAME_MS } from '../../common
 export class CandleBuilder {
     canonicalAssetId;
     feedId;
+    feedEpochId;
     timeframe;
     emitter;
+    firstCandleGapAffected;
     state = null;
-    constructor(canonicalAssetId, feedId, timeframe, emitter) {
+    firstCandle = true;
+    constructor(canonicalAssetId, feedId, feedEpochId, timeframe, emitter, firstCandleGapAffected = false) {
         this.canonicalAssetId = canonicalAssetId;
         this.feedId = feedId;
+        this.feedEpochId = feedEpochId;
         this.timeframe = timeframe;
         this.emitter = emitter;
+        this.firstCandleGapAffected = firstCandleGapAffected;
     }
     ingest(tick) {
         const bucket = alignToCandleStart(tick.eventTimestampEpochMs, this.timeframe);
         if (!this.state) {
-            this.state = this.open(bucket, tick, false);
+            this.state = this.open(bucket, tick, this.firstCandle && this.firstCandleGapAffected);
+            this.firstCandle = false;
             return;
         }
         if (bucket < this.state.start)
@@ -65,9 +71,10 @@ export class CandleBuilder {
     }
     emitEmpty(start) {
         this.emitter({
-            candleSchemaVersion: '3',
+            candleSchemaVersion: '4',
             canonicalAssetId: this.canonicalAssetId,
             feedId: this.feedId,
+            feedEpochId: this.feedEpochId,
             timeframe: this.timeframe,
             startTimestamp: start,
             endTimestamp: alignToCandleEnd(start, this.timeframe),
@@ -83,9 +90,10 @@ export class CandleBuilder {
     }
     toCandle(state, lifecycle) {
         return {
-            candleSchemaVersion: '3',
+            candleSchemaVersion: '4',
             canonicalAssetId: this.canonicalAssetId,
             feedId: this.feedId,
+            feedEpochId: this.feedEpochId,
             timeframe: this.timeframe,
             startTimestamp: state.start,
             endTimestamp: alignToCandleEnd(state.start, this.timeframe),

@@ -16,18 +16,22 @@ export type CandleEmitter = (candle: Candle) => void;
 
 export class CandleBuilder {
   private state: CandleState | null = null;
+  private firstCandle = true;
 
   public constructor(
     private readonly canonicalAssetId: string,
     private readonly feedId: string,
+    private readonly feedEpochId: string,
     private readonly timeframe: Timeframe,
     private readonly emitter: CandleEmitter,
+    private readonly firstCandleGapAffected = false,
   ) {}
 
   public ingest(tick: Tick): void {
     const bucket = alignToCandleStart(tick.eventTimestampEpochMs, this.timeframe);
     if (!this.state) {
-      this.state = this.open(bucket, tick, false);
+      this.state = this.open(bucket, tick, this.firstCandle && this.firstCandleGapAffected);
+      this.firstCandle = false;
       return;
     }
     if (bucket < this.state.start) return;
@@ -78,9 +82,10 @@ export class CandleBuilder {
 
   private emitEmpty(start: number): void {
     this.emitter({
-      candleSchemaVersion: '3',
+      candleSchemaVersion: '4',
       canonicalAssetId: this.canonicalAssetId,
       feedId: this.feedId,
+      feedEpochId: this.feedEpochId,
       timeframe: this.timeframe,
       startTimestamp: start,
       endTimestamp: alignToCandleEnd(start, this.timeframe),
@@ -97,9 +102,10 @@ export class CandleBuilder {
 
   private toCandle(state: CandleState, lifecycle: Candle['lifecycle']): Candle {
     return {
-      candleSchemaVersion: '3',
+      candleSchemaVersion: '4',
       canonicalAssetId: this.canonicalAssetId,
       feedId: this.feedId,
+      feedEpochId: this.feedEpochId,
       timeframe: this.timeframe,
       startTimestamp: state.start,
       endTimestamp: alignToCandleEnd(state.start, this.timeframe),

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OTC Elite Signal Engine",
-  "version": "1.5.0",
-  "description": "Signal-only quantitative laboratory for Pocket Option OTC reference-feed research",
+  "version": "1.6.0",
+  "description": "Signal-only quantitative laboratory for Pocket Option OTC reference-feed research with resilient shadow market transport",
   "permissions": [
     "storage",
     "unlimitedStorage",
@@ -46,5 +46,9 @@
   "options_ui": {
     "page": "src/ui/dashboard/index.html",
     "open_in_tab": true
-  }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' wss://*.po.market"
+  },
+  "minimum_chrome_version": "116"
 }

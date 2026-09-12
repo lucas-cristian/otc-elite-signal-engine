@@ -17,6 +17,8 @@ export class DatasetExporter {
             decisionSignalLinks: snapshot.decisionSignalLinks,
             signals: snapshot.signals,
             results: snapshot.results,
+            continuityEvents: snapshot.continuityEvents,
+            transportEvents: snapshot.transportEvents,
         };
         const checksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
         const configHashes = [...new Set(snapshot.decisions.map((decision) => decision.configHash))].sort();
@@ -33,8 +35,9 @@ export class DatasetExporter {
             latestTickReceivedAt: item.latestTickReceivedAt,
             latestTickAgeMs: item.latestTickAgeMs,
         }));
+        const reconnectTypes = new Set(['PAGE_WS_CLOSE', 'PAGE_WS_ERROR', 'SHADOW_WS_CLOSE', 'SHADOW_RECONNECT_SCHEDULED', 'SHADOW_STALL_DETECTED']);
         const manifestBase = {
-            datasetSchemaVersion: '4',
+            datasetSchemaVersion: '5',
             createdAt: metadata.createdAt,
             appVersion: metadata.appVersion,
             buildId: metadata.buildId,
@@ -55,10 +58,13 @@ export class DatasetExporter {
             suppressedCorrelatedDecisionCount: snapshot.decisions.filter((decision) => decision.arbitrationStatus === 'SUPPRESSED_CORRELATED' || decision.arbitrationStatus === 'SUPPRESSED_ACTIVE_EPISODE').length,
             signalCount: snapshot.signals.length,
             resultCount: snapshot.results.length,
+            continuityEventCount: snapshot.continuityEvents.length,
+            transportEventCount: snapshot.transportEvents.length,
+            reconnectEventCount: snapshot.transportEvents.filter((event) => reconnectTypes.has(event.eventType)).length,
             configHashes,
             checksumSha256,
         };
-        const manifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 4, manifestBase) };
+        const manifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 5, manifestBase) };
         return { manifest, ...body };
     }
 }

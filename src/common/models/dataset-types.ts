@@ -1,5 +1,6 @@
+import type { FeedContinuityEvent } from './feed-continuity.js';
 import type { DecisionRecord, DecisionSignalLink, EntryResolutionRecord, ResultRecord, SignalRecord } from './journal-types.js';
-import type { CaptureTransportSnapshot } from './runtime-telemetry.js';
+import type { CaptureTransportSnapshot, TransportEventRecord } from './runtime-telemetry.js';
 import type { Candle, OperationalDataState, PayoutSnapshot, Tick } from './types.js';
 
 export interface DatasetAssetFeedHealth {
@@ -13,7 +14,7 @@ export interface DatasetAssetFeedHealth {
 }
 
 export interface DatasetManifest {
-  datasetSchemaVersion: '4';
+  datasetSchemaVersion: '5';
   datasetId: string;
   createdAt: number;
   appVersion: string;
@@ -35,6 +36,9 @@ export interface DatasetManifest {
   suppressedCorrelatedDecisionCount: number;
   signalCount: number;
   resultCount: number;
+  continuityEventCount: number;
+  transportEventCount: number;
+  reconnectEventCount: number;
   configHashes: string[];
   checksumSha256: string;
 }
@@ -49,4 +53,6 @@ export interface ScientificDataset {
   decisionSignalLinks: DecisionSignalLink[];
   signals: SignalRecord[];
   results: ResultRecord[];
+  continuityEvents: FeedContinuityEvent[];
+  transportEvents: TransportEventRecord[];
 }

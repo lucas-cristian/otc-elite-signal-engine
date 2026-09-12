@@ -56,6 +56,7 @@ export interface EvidenceSnapshot {
 export interface EvaluationWindow {
   evaluationWindowId: string;
   canonicalAssetId: string;
+  feedEpochId: string;
   timeframe: Timeframe;
   candleStartTimestamp: number;
   windowStartTimestamp: number;
@@ -65,11 +66,12 @@ export interface EvaluationWindow {
 }
 
 export interface DecisionRecord {
-  decisionSchemaVersion: '4';
+  decisionSchemaVersion: '5';
   decisionId: string;
   decisionGranularityKey: string;
   executionMode: ExecutionMode;
   canonicalAssetId: string;
+  feedEpochId: string;
   timeframe: Timeframe;
   decisionComputedAt: number;
   decisionPublishedAt: number;
@@ -133,11 +135,12 @@ export interface UnresolvedEntryRecord {
 export type EntryResolutionRecord = ResolvedEntryRecord | UnresolvedEntryRecord;
 
 export interface SignalRecord {
-  signalSchemaVersion: '3';
+  signalSchemaVersion: '4';
   signalId: string;
   signalFingerprint: string;
   decisionId: string;
   marketEpisodeId: string;
+  feedEpochId: string;
   executionMode: ExecutionMode;
   canonicalAssetId: string;
   direction: SignalDirection;

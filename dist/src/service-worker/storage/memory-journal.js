@@ -8,6 +8,8 @@ export class MemoryJournal {
     links = new Map();
     signals = new Map();
     results = new Map();
+    continuity = new Map();
+    transport = new Map();
     async appendTick(value) { this.append(this.ticks, value.tickId, value); }
     async appendPayoutSnapshot(value) { this.append(this.payouts, `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`, value); }
     async appendCandle(value) { this.append(this.candles, this.candleKey(value), value); }
@@ -16,6 +18,8 @@ export class MemoryJournal {
     async appendDecisionSignalLink(value) { this.append(this.links, value.decisionId, value); }
     async appendSignal(value) { this.append(this.signals, value.signalId, value); }
     async appendResult(value) { this.append(this.results, value.signalId, value); }
+    async appendContinuityEvent(value) { this.append(this.continuity, value.continuityEventId, value); }
+    async appendTransportEvent(value) { this.append(this.transport, value.transportEventId, value); }
     async snapshot() {
         return {
             ticks: [...this.ticks.values()],
@@ -26,6 +30,8 @@ export class MemoryJournal {
             decisionSignalLinks: [...this.links.values()],
             signals: [...this.signals.values()],
             results: [...this.results.values()],
+            continuityEvents: [...this.continuity.values()],
+            transportEvents: [...this.transport.values()],
         };
     }
     append(map, key, value) {
@@ -36,6 +42,6 @@ export class MemoryJournal {
             map.set(key, value);
     }
     candleKey(candle) {
-        return `${candle.canonicalAssetId}:${candle.feedId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
+        return `${candle.canonicalAssetId}:${candle.feedId}:${candle.feedEpochId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
     }
 }

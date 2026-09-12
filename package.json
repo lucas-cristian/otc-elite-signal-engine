@@ -1,6 +1,6 @@
 {
   "name": "otc-elite-signal-engine",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,9 @@
     "validate:manifest": "node scripts/validate-manifest.mjs",
     "verify": "npm run typecheck && npm test && npm run build && npm run validate:manifest"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "typescript": "^5.8.3"
   }

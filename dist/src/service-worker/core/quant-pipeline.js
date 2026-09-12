@@ -10,7 +10,7 @@ import { RecoveryService } from '../storage/recovery-service.js';
 import { assessOperationalHealth, DEFAULT_DATA_HEALTH_THRESHOLDS, validateDataHealthThresholds, } from './data-health.js';
 import { MarketEpisodeArbitrator } from './market-episode-arbitrator.js';
 export const DEFAULT_PIPELINE_CONFIG = {
-    appVersion: '1.5.0',
+    appVersion: '1.6.0',
     executionMode: 'LIVE',
     timeframes: ['5s', '10s', '15s', '30s', '60s'],
     expirationSeconds: 60,
@@ -22,6 +22,7 @@ export const DEFAULT_PIPELINE_CONFIG = {
     dataHealthThresholds: DEFAULT_DATA_HEALTH_THRESHOLDS,
     arbitrationConflictScoreMargin: 0.10,
     episodeHorizonMs: 68_000,
+    continuityGapAfterMs: 15_000,
 };
 export class QuantPipeline {
     journal;
@@ -45,6 +46,8 @@ export class QuantPipeline {
         this.journal = journal;
         this.config = config;
         validateDataHealthThresholds(config.dataHealthThresholds);
+        if (!Number.isFinite(config.continuityGapAfterMs) || config.continuityGapAfterMs <= 0)
+            throw new Error('continuityGapAfterMs must be positive');
         this.entryResolver = new EntryResolver(config.maxEntryResolutionDelayMs);
         this.resultEngine = new ResultEngine(config.maxExpiryResolutionDelayMs);
         this.episodeArbitrator = new MarketEpisodeArbitrator({
@@ -60,12 +63,13 @@ export class QuantPipeline {
             dataHealthThresholds: config.dataHealthThresholds,
             arbitrationConflictScoreMargin: config.arbitrationConflictScoreMargin,
             episodeHorizonMs: config.episodeHorizonMs,
+            continuityGapAfterMs: config.continuityGapAfterMs,
             protocolRegistryVersion: PROTOCOL_VERIFICATION_REGISTRY_VERSION,
         };
         this.decisionEngine = new DecisionEngine({
             executionMode: config.executionMode,
             appVersion: config.appVersion,
-            configHash: canonicalEntityHash('CONFIG', 3, configSnapshot),
+            configHash: canonicalEntityHash('CONFIG', 4, configSnapshot),
             configSnapshot,
             expirationSeconds: config.expirationSeconds,
             minModelScore: config.minModelScore,
@@ -76,13 +80,18 @@ export class QuantPipeline {
         this.currentNow = nowMs;
         const recovery = await new RecoveryService(this.journal).derive();
         this.latestTick = recovery.latestTick;
-        for (const tick of recovery.latestTicksByAssetFeed)
-            this.restoreLatestTick(tick);
+        for (const state of recovery.latestAssetFeedStates)
+            this.restoreAssetRuntime(state.tick, state.feedEpochId);
         for (const payout of recovery.latestPayoutSnapshots) {
             this.payoutByAssetAndFeed.set(this.payoutKey(payout.canonicalAssetId, payout.feedId), payout);
         }
         for (const decision of recovery.pendingEntries) {
             const health = this.healthForDecision(decision, nowMs);
+            const runtime = decision.sourceFeedId === null ? null : this.assets.get(this.assetKey(decision.canonicalAssetId, decision.sourceFeedId));
+            if (runtime && runtime.feedEpochId !== decision.feedEpochId) {
+                await this.journal.appendEntryResolution(this.entryResolver.invalidate(decision, nowMs, 'EXTENSION_CONTEXT_LOST'));
+                continue;
+            }
             const timeout = this.entryResolver.timeout(decision, nowMs, this.entryTimeoutReason(health.state));
             if (timeout)
                 await this.journal.appendEntryResolution(timeout);
@@ -93,6 +102,11 @@ export class QuantPipeline {
         }
         for (const signal of recovery.pendingResults) {
             const health = this.healthForSignal(signal, nowMs);
+            const runtime = this.assets.get(this.assetKey(signal.canonicalAssetId, signal.entryMarketSourceIdentity.feedId));
+            if (runtime && runtime.feedEpochId !== signal.feedEpochId) {
+                await this.journal.appendResult(this.resultEngine.invalidate(signal, nowMs, 'ASSET_FEED_LOST'));
+                continue;
+            }
             const timeout = this.resultEngine.timeout(signal, nowMs, this.resultTimeoutReason(health.state));
             if (timeout)
                 await this.journal.appendResult(timeout);
@@ -114,11 +128,27 @@ export class QuantPipeline {
         this.processing = this.processing.then(() => this.processWatchdog(nowMs));
         return this.processing;
     }
+    connectionLost(connectionId, occurredAt, reason) {
+        this.processing = this.processing.then(() => this.processConnectionLost(connectionId, occurredAt, reason));
+        return this.processing;
+    }
     getOperationalHealth(nowMs) {
         return assessOperationalHealth(this.latestTick?.receivedAtEpochMs ?? null, this.startedAt, nowMs, this.config.dataHealthThresholds);
     }
     getAssetFeedOperationalHealth(canonicalAssetId, feedId, nowMs) {
         const runtime = this.assets.get(this.assetKey(canonicalAssetId, feedId));
+        if (runtime?.continuityBroken) {
+            return {
+                canonicalAssetId,
+                feedId,
+                state: 'DATA_UNAVAILABLE',
+                reason: 'CONTINUITY_BROKEN',
+                assessedAt: nowMs,
+                latestTickReceivedAt: runtime.latestTick?.receivedAtEpochMs ?? null,
+                latestTickAgeMs: runtime.latestTick === null ? null : Math.max(0, nowMs - runtime.latestTick.receivedAtEpochMs),
+                thresholds: this.config.dataHealthThresholds,
+            };
+        }
         const health = assessOperationalHealth(runtime?.latestTick?.receivedAtEpochMs ?? null, runtime?.startedAt ?? this.startedAt, nowMs, this.config.dataHealthThresholds);
         return { canonicalAssetId, feedId, ...health };
     }
@@ -141,17 +171,160 @@ export class QuantPipeline {
         this.currentNow = Math.max(this.currentNow, tick.receivedAtEpochMs);
         await this.expirePending(tick.receivedAtEpochMs);
         this.latestTick = this.latestTick === null || tick.receivedAtEpochMs >= this.latestTick.receivedAtEpochMs ? tick : this.latestTick;
-        const asset = this.assetRuntime(tick.marketSourceIdentity.canonicalAssetId, tick.marketSourceIdentity.feedId, tick.receivedAtEpochMs);
+        const asset = await this.prepareRuntimeForTick(tick);
         asset.latestTick = tick;
         await this.journal.appendTick(tick);
-        await this.resolveExistingEntries(tick);
-        await this.resolveExistingResults(tick);
+        await this.resolveExistingEntries(tick, asset);
+        await this.resolveExistingResults(tick, asset);
         asset.ticks.push(tick);
         if (asset.ticks.length > this.config.maxHotTicks)
             asset.ticks.splice(0, asset.ticks.length - this.config.maxHotTicks);
         for (const builder of asset.builders.values())
             builder.ingest(tick);
         await this.drainCandles(asset, tick.receivedAtEpochMs);
+    }
+    async prepareRuntimeForTick(tick) {
+        const canonicalAssetId = tick.marketSourceIdentity.canonicalAssetId;
+        const feedId = tick.marketSourceIdentity.feedId;
+        const key = this.assetKey(canonicalAssetId, feedId);
+        const existing = this.assets.get(key);
+        if (!existing)
+            return this.startEpoch(tick, 'INITIAL_FEED_EPOCH', false);
+        const gapMs = existing.latestTick === null ? 0 : tick.receivedAtEpochMs - existing.latestTick.receivedAtEpochMs;
+        const connectionChanged = existing.currentConnectionId !== tick.connectionId || existing.currentPageSessionId !== tick.pageSessionId;
+        if (!existing.continuityBroken && !connectionChanged && gapMs <= this.config.continuityGapAfterMs)
+            return existing;
+        const eventType = existing.continuityBroken
+            ? 'CONNECTION_LOST'
+            : connectionChanged
+                ? 'SOURCE_SWITCH'
+                : 'GAP_DETECTED';
+        const reason = existing.continuityBroken
+            ? 'RECOVERY_AFTER_CONNECTION_LOSS'
+            : connectionChanged
+                ? 'MARKET_TRANSPORT_SOURCE_CHANGED'
+                : `TICK_GAP_${gapMs}MS`;
+        await this.endEpoch(existing, tick.receivedAtEpochMs, eventType, reason, gapMs > 0 ? gapMs : null, tick.connectionId);
+        await this.invalidatePendingForAssetFeed(canonicalAssetId, feedId, tick.receivedAtEpochMs);
+        this.episodeArbitrator.invalidateAssetFeed(canonicalAssetId, feedId);
+        this.assets.delete(key);
+        return this.startEpoch(tick, reason, true);
+    }
+    async startEpoch(tick, reason, firstCandleGapAffected) {
+        const canonicalAssetId = tick.marketSourceIdentity.canonicalAssetId;
+        const feedId = tick.marketSourceIdentity.feedId;
+        const feedEpochId = canonicalEntityHash('FEED_EPOCH', 1, {
+            canonicalAssetId,
+            feedId,
+            connectionId: tick.connectionId,
+            pageSessionId: tick.pageSessionId,
+            startedAt: tick.receivedAtEpochMs,
+        });
+        const runtime = this.createRuntime({
+            canonicalAssetId,
+            feedId,
+            feedEpochId,
+            currentConnectionId: tick.connectionId,
+            currentPageSessionId: tick.pageSessionId,
+            startedAt: tick.receivedAtEpochMs,
+            firstCandleGapAffected,
+        });
+        this.assets.set(this.assetKey(canonicalAssetId, feedId), runtime);
+        await this.appendContinuity(runtime, 'EPOCH_STARTED', tick.receivedAtEpochMs, reason, null, null);
+        return runtime;
+    }
+    createRuntime(input) {
+        const candles = new Map();
+        const builders = new Map();
+        for (const timeframe of this.config.timeframes) {
+            candles.set(timeframe, []);
+            builders.set(timeframe, new CandleBuilder(input.canonicalAssetId, input.feedId, input.feedEpochId, timeframe, (candle) => this.emittedCandles.push(candle), input.firstCandleGapAffected));
+        }
+        return {
+            canonicalAssetId: input.canonicalAssetId,
+            feedId: input.feedId,
+            feedEpochId: input.feedEpochId,
+            currentConnectionId: input.currentConnectionId,
+            currentPageSessionId: input.currentPageSessionId,
+            builders,
+            candles,
+            ticks: [],
+            latestTick: null,
+            startedAt: input.startedAt,
+            continuityBroken: false,
+        };
+    }
+    restoreAssetRuntime(tick, feedEpochId) {
+        const runtime = this.createRuntime({
+            canonicalAssetId: tick.marketSourceIdentity.canonicalAssetId,
+            feedId: tick.marketSourceIdentity.feedId,
+            feedEpochId,
+            currentConnectionId: tick.connectionId,
+            currentPageSessionId: tick.pageSessionId,
+            startedAt: tick.receivedAtEpochMs,
+            firstCandleGapAffected: true,
+        });
+        runtime.latestTick = tick;
+        this.assets.set(this.assetKey(runtime.canonicalAssetId, runtime.feedId), runtime);
+    }
+    async processConnectionLost(connectionId, occurredAt, reason) {
+        this.currentNow = Math.max(this.currentNow, occurredAt);
+        for (const runtime of this.assets.values()) {
+            if (runtime.currentConnectionId !== connectionId || runtime.continuityBroken)
+                continue;
+            runtime.continuityBroken = true;
+            await this.appendContinuity(runtime, 'CONNECTION_LOST', occurredAt, reason, null, null);
+            await this.appendContinuity(runtime, 'EPOCH_ENDED', occurredAt, reason, null, null);
+            await this.invalidatePendingForAssetFeed(runtime.canonicalAssetId, runtime.feedId, occurredAt);
+            this.episodeArbitrator.invalidateAssetFeed(runtime.canonicalAssetId, runtime.feedId);
+        }
+    }
+    async endEpoch(runtime, occurredAt, eventType, reason, gapMs, nextConnectionId) {
+        if (eventType !== 'CONNECTION_LOST') {
+            await this.appendContinuity(runtime, eventType, occurredAt, reason, gapMs, nextConnectionId);
+        }
+        if (!runtime.continuityBroken)
+            await this.appendContinuity(runtime, 'EPOCH_ENDED', occurredAt, reason, gapMs, nextConnectionId);
+    }
+    async appendContinuity(runtime, eventType, occurredAt, reason, gapMs, nextConnectionId) {
+        const event = {
+            feedContinuityEventSchemaVersion: '1',
+            continuityEventId: canonicalEntityHash('FEED_CONTINUITY_EVENT', 1, {
+                canonicalAssetId: runtime.canonicalAssetId,
+                feedId: runtime.feedId,
+                feedEpochId: runtime.feedEpochId,
+                eventType,
+                occurredAt,
+                connectionId: nextConnectionId ?? runtime.currentConnectionId,
+                previousConnectionId: runtime.currentConnectionId,
+                reason,
+            }),
+            canonicalAssetId: runtime.canonicalAssetId,
+            feedId: runtime.feedId,
+            feedEpochId: runtime.feedEpochId,
+            eventType,
+            occurredAt,
+            connectionId: nextConnectionId ?? runtime.currentConnectionId,
+            previousConnectionId: runtime.currentConnectionId,
+            pageSessionId: runtime.currentPageSessionId,
+            gapMs,
+            reason,
+        };
+        await this.journal.appendContinuityEvent(event);
+    }
+    async invalidatePendingForAssetFeed(canonicalAssetId, feedId, nowMs) {
+        for (const [decisionId, decision] of [...this.pendingEntries]) {
+            if (decision.canonicalAssetId !== canonicalAssetId || decision.sourceFeedId !== feedId)
+                continue;
+            this.pendingEntries.delete(decisionId);
+            await this.journal.appendEntryResolution(this.entryResolver.invalidate(decision, nowMs, 'FEED_STALE'));
+        }
+        for (const [signalId, signal] of [...this.pendingSignals]) {
+            if (signal.canonicalAssetId !== canonicalAssetId || signal.entryMarketSourceIdentity.feedId !== feedId)
+                continue;
+            this.pendingSignals.delete(signalId);
+            await this.journal.appendResult(this.resultEngine.invalidate(signal, nowMs, 'ASSET_FEED_LOST'));
+        }
     }
     async processPayout(payoutSnapshot) {
         this.currentNow = Math.max(this.currentNow, payoutSnapshot.capturedAt);
@@ -161,31 +334,13 @@ export class QuantPipeline {
     async processWatchdog(nowMs) {
         this.currentNow = Math.max(this.currentNow, nowMs);
         for (const asset of this.assets.values()) {
+            if (asset.continuityBroken)
+                continue;
             for (const builder of asset.builders.values())
                 builder.advanceClock(nowMs);
             await this.drainCandles(asset, nowMs);
         }
         await this.expirePending(nowMs);
-    }
-    assetRuntime(canonicalAssetId, feedId, startedAt = this.currentNow) {
-        const key = this.assetKey(canonicalAssetId, feedId);
-        const existing = this.assets.get(key);
-        if (existing)
-            return existing;
-        const candles = new Map();
-        const builders = new Map();
-        for (const timeframe of this.config.timeframes) {
-            candles.set(timeframe, []);
-            builders.set(timeframe, new CandleBuilder(canonicalAssetId, feedId, timeframe, (candle) => this.emittedCandles.push(candle)));
-        }
-        const created = { canonicalAssetId, feedId, builders, candles, ticks: [], latestTick: null, startedAt };
-        this.assets.set(key, created);
-        return created;
-    }
-    restoreLatestTick(tick) {
-        const runtime = this.assetRuntime(tick.marketSourceIdentity.canonicalAssetId, tick.marketSourceIdentity.feedId, tick.receivedAtEpochMs);
-        if (runtime.latestTick === null || tick.receivedAtEpochMs > runtime.latestTick.receivedAtEpochMs)
-            runtime.latestTick = tick;
     }
     async drainCandles(asset, nowMs) {
         const decisions = [];
@@ -194,7 +349,7 @@ export class QuantPipeline {
             const candle = this.emittedCandles.shift();
             if (!candle)
                 continue;
-            if (candle.canonicalAssetId !== asset.canonicalAssetId || candle.feedId !== asset.feedId) {
+            if (candle.canonicalAssetId !== asset.canonicalAssetId || candle.feedId !== asset.feedId || candle.feedEpochId !== asset.feedEpochId) {
                 remaining.push(candle);
                 continue;
             }
@@ -216,13 +371,16 @@ export class QuantPipeline {
         await this.journal.appendCandle(candle);
         if (candle.lifecycle !== 'CLOSED')
             return null;
+        if (candle.feedEpochId !== asset.feedEpochId || asset.continuityBroken)
+            return null;
         const history = asset.candles.get(candle.timeframe);
         if (!history)
             return null;
         history.push(candle);
         if (history.length > this.config.maxCandlesPerTimeframe)
             history.splice(0, history.length - this.config.maxCandlesPerTimeframe);
-        const coreReady = history.filter((item) => item.close !== null).length >= 5;
+        const cleanClosed = history.filter((item) => item.close !== null && item.quality === 'CLEAN');
+        const coreReady = cleanClosed.length >= 5;
         const features = coreReady ? this.featureEngine.compute({
             candles: history,
             ticks: asset.ticks,
@@ -234,6 +392,7 @@ export class QuantPipeline {
         const operationalDataState = this.decisionOperationalState(health.state, coreReady, candle.quality === 'GAP_AFFECTED');
         return this.decisionEngine.evaluate({
             canonicalAssetId: candle.canonicalAssetId,
+            feedEpochId: candle.feedEpochId,
             timeframe: candle.timeframe,
             candleStartTimestamp: candle.startTimestamp,
             candleEndTimestamp: candle.endTimestamp,
@@ -256,12 +415,17 @@ export class QuantPipeline {
             return 'DEGRADED';
         return 'HEALTHY';
     }
-    async resolveExistingEntries(tick) {
+    async resolveExistingEntries(tick, asset) {
         for (const [decisionId, decision] of [...this.pendingEntries]) {
             if (decision.canonicalAssetId !== tick.marketSourceIdentity.canonicalAssetId)
                 continue;
             if (decision.sourceFeedId !== tick.marketSourceIdentity.feedId)
                 continue;
+            if (decision.feedEpochId !== asset.feedEpochId) {
+                this.pendingEntries.delete(decisionId);
+                await this.journal.appendEntryResolution(this.entryResolver.invalidate(decision, tick.receivedAtEpochMs, 'FEED_STALE'));
+                continue;
+            }
             const payoutSnapshot = this.payoutByAssetAndFeed.get(this.payoutKey(decision.canonicalAssetId, tick.marketSourceIdentity.feedId)) ?? null;
             const outcome = this.entryResolver.resolveFromTick(decision, tick, payoutSnapshot);
             if (!outcome)
@@ -275,12 +439,17 @@ export class QuantPipeline {
             }
         }
     }
-    async resolveExistingResults(tick) {
+    async resolveExistingResults(tick, asset) {
         for (const [signalId, signal] of [...this.pendingSignals]) {
             if (signal.canonicalAssetId !== tick.marketSourceIdentity.canonicalAssetId)
                 continue;
             if (signal.entryMarketSourceIdentity.feedId !== tick.marketSourceIdentity.feedId)
                 continue;
+            if (signal.feedEpochId !== asset.feedEpochId) {
+                this.pendingSignals.delete(signalId);
+                await this.journal.appendResult(this.resultEngine.invalidate(signal, tick.receivedAtEpochMs, 'ASSET_FEED_LOST'));
+                continue;
+            }
             const result = this.resultEngine.evaluateFromTick(signal, tick);
             if (!result)
                 continue;
@@ -341,6 +510,7 @@ export class QuantPipeline {
             marketEpisodeId: decision.marketEpisodeId,
             canonicalAssetId: decision.canonicalAssetId,
             feedId: decision.sourceFeedId,
+            feedEpochId: decision.feedEpochId,
             direction: decision.finalDecision,
             primaryDecisionId: decision.decisionId,
             expiresAt: decision.decisionPublishedAt + this.config.episodeHorizonMs,
@@ -351,6 +521,7 @@ export class QuantPipeline {
             marketEpisodeId: signal.marketEpisodeId,
             canonicalAssetId: signal.canonicalAssetId,
             feedId: signal.entryMarketSourceIdentity.feedId,
+            feedEpochId: signal.feedEpochId,
             direction: signal.direction,
             primaryDecisionId: signal.decisionId,
             expiresAt: signal.expectedExpiryTimestamp + this.config.maxExpiryResolutionDelayMs,

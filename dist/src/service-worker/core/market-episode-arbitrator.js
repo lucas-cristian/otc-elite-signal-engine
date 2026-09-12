@@ -23,7 +23,8 @@ export class MarketEpisodeArbitrator {
             return decisions;
         const canonicalAssetId = candidates[0]?.canonicalAssetId;
         const feedId = candidates[0]?.sourceFeedId;
-        if (!canonicalAssetId || !feedId || candidates.some((decision) => decision.canonicalAssetId !== canonicalAssetId || decision.sourceFeedId !== feedId)) {
+        const feedEpochId = candidates[0]?.feedEpochId;
+        if (!canonicalAssetId || !feedId || !feedEpochId || candidates.some((decision) => decision.canonicalAssetId !== canonicalAssetId || decision.sourceFeedId !== feedId || decision.feedEpochId !== feedEpochId)) {
             return decisions.map((decision) => isCandidate(decision) ? this.suppress(decision, null, 'SUPPRESSED_CONFLICT', 'ARBITRATION_SOURCE_MISMATCH') : decision);
         }
         const key = this.key(canonicalAssetId, feedId);
@@ -44,6 +45,7 @@ export class MarketEpisodeArbitrator {
             const conflictId = canonicalEntityHash('MARKET_EPISODE_CONFLICT', 1, {
                 canonicalAssetId,
                 feedId,
+                feedEpochId,
                 createdAt: nowMs,
                 decisionIds: ordered.map((decision) => decision.decisionId).sort(),
             });
@@ -54,6 +56,7 @@ export class MarketEpisodeArbitrator {
         const marketEpisodeId = canonicalEntityHash('MARKET_EPISODE', 1, {
             canonicalAssetId,
             feedId,
+            feedEpochId,
             primaryDecisionId: top.decisionId,
             direction: top.finalDecision,
             startedAt: nowMs,
@@ -63,6 +66,7 @@ export class MarketEpisodeArbitrator {
             marketEpisodeId,
             canonicalAssetId,
             feedId,
+            feedEpochId,
             direction: top.finalDecision,
             primaryDecisionId: top.decisionId,
             expiresAt: nowMs + this.config.activeEpisodeHorizonMs,
@@ -86,6 +90,9 @@ export class MarketEpisodeArbitrator {
         const existing = this.activeByAssetFeed.get(key);
         if (!existing || input.expiresAt > existing.expiresAt)
             this.activeByAssetFeed.set(key, input);
+    }
+    invalidateAssetFeed(canonicalAssetId, feedId) {
+        this.activeByAssetFeed.delete(this.key(canonicalAssetId, feedId));
     }
     activeEpisodeCount(nowMs) {
         for (const [key, episode] of this.activeByAssetFeed)

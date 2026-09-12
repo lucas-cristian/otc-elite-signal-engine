@@ -48,7 +48,7 @@ const buildMetadata = {
   buildSystem: 'tsc',
   buildId: `source-${sourceTreeSha256.slice(0, 16)}`,
   sourceTreeSha256,
-  gitCommit: git.gitWorkingTreeClean === true ? git.gitCommit : null,
+  gitCommit: git.gitCommit,
   gitWorkingTreeClean: git.gitWorkingTreeClean,
 };
 

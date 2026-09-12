@@ -42,11 +42,12 @@ function tick(receivedAtEpochMs: number): Tick {
 
 function pendingDecision(): DecisionRecord {
   return {
-    decisionSchemaVersion: '4',
+    decisionSchemaVersion: '5',
     decisionId: 'decision-pending',
     decisionGranularityKey: 'granularity',
     executionMode: 'LIVE',
     canonicalAssetId: 'EURUSDOTC',
+    feedEpochId: 'epoch-1',
     timeframe: '5s',
     decisionComputedAt: 1_000,
     decisionPublishedAt: 1_000,
@@ -80,11 +81,12 @@ function pendingDecision(): DecisionRecord {
 
 function pendingSignal(): SignalRecord {
   return {
-    signalSchemaVersion: '3',
+    signalSchemaVersion: '4',
     signalId: 'signal-pending',
     signalFingerprint: 'fingerprint',
     decisionId: 'decision-resolved',
     marketEpisodeId: 'episode-signal',
+    feedEpochId: 'epoch-1',
     executionMode: 'LIVE',
     canonicalAssetId: 'EURUSDOTC',
     direction: 'CALL',

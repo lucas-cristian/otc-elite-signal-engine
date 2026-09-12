@@ -11,7 +11,8 @@ export type DataHealthReason =
   | 'FRESH'
   | 'TICK_AGE_DEGRADED'
   | 'TICK_AGE_STALE'
-  | 'TICK_AGE_DATA_UNAVAILABLE';
+  | 'TICK_AGE_DATA_UNAVAILABLE'
+  | 'CONTINUITY_BROKEN';
 
 export interface OperationalHealthSnapshot {
   state: OperationalDataState;

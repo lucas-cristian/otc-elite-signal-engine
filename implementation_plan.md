@@ -2,15 +2,56 @@
 
 ## Status
 
-Release: **1.5.0**
+Release: **1.6.0**
 
 Protocol registry: **2026-09-12.1**
 
-Scientific runtime status: exact captured Socket.IO binary schemas are verified only through frozen registry evidence; unregistered feeds fail closed.
+Runtime objective: maintain signal-only OTC market observation without depending on a focused broker tab, while preserving strict scientific continuity boundaries and never executing orders.
 
-## 1. Protocol authority
+## 1. Production transport
 
-The runtime no longer equates DEMO hostname with verification. `protocol-verification-registry.ts` requires the exact tuple:
+### Primary page transport
+
+```text
+Pocket Option page WebSocket
+→ MAIN interceptor
+→ Socket.IO binary decoder
+→ semantic event
+→ ISOLATED validation/sequencing
+→ runtime.Port
+→ Service Worker
+```
+
+The ISOLATED route uses microtask flushing and no page timer for market delivery.
+
+### Shadow market transport
+
+The Service Worker receives ephemeral recovery context from the already-authenticated page:
+
+```text
+market endpoint
+auth packet
+safe subscription packets
+```
+
+It opens an independent market WebSocket and performs the observed Engine.IO/Socket.IO handshake. It may replay only:
+
+```text
+changeSymbol
+subfor
+subscribeSymbol for *_otc
+ps
+```
+
+Trade/order events are outside the whitelist and cannot be sent by `ShadowMarketConnection`.
+
+Auth/session context is memory-only and excluded from storage, journal, logs and dataset export.
+
+Reconnect backoff is 1/2/5/10/20 seconds. A 15-second price silence is a stall. Chrome 116+ is required for resilient extension Service Worker WebSockets.
+
+## 2. Protocol authority
+
+Verification requires the frozen tuple:
 
 ```text
 feed host
@@ -18,10 +59,10 @@ feed host
 + Socket.IO event name
 + parser schema ID
 + payload shape ID
-+ OTC market semantics
++ OTC semantics
 ```
 
-Frozen captured hosts:
+Verified captured hosts:
 
 ```text
 demo-api-eu.po.market
@@ -29,171 +70,164 @@ api-us-north.po.market
 api-us-south.po.market
 ```
 
-Frozen event schemas:
+Unknown feeds remain `INFERRED` and fail closed.
+
+## 3. Feed continuity
+
+Every asset/feed owns a deterministic `feedEpochId`.
+
+Epoch-breaking conditions:
 
 ```text
-updateStream -> POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1 -> OTC_STREAM_TRIPLE_V1
-chafor       -> POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1 -> OTC_PAYOUT_PAIR_V1
+explicit CLOSE / ERROR
+shadow stall
+connection ID change
+pageSessionId change
+tick gap > 15 s
 ```
 
-Each registry record stores verification ID, evidence time and capture SHA-256. Unregistered hosts remain `INFERRED` even if they parse structurally.
-
-## 2. Market protocol
-
-Price sequence:
+On break:
 
 ```text
-451-["updateStream",{"_placeholder":true,"num":0}]
-<binary UTF-8 JSON attachment>
+persist continuity event
+invalidate pending entry/result
+invalidate active market episode
+reset hot ticks/candles/features/regimes
+start new feed epoch
+first recovered candle = GAP_AFFECTED
+fresh warmup required
 ```
 
-Attachment:
+The model requires five fresh CLEAN closed candles before leaving warmup. No pre-gap feature history may cross an epoch.
+
+## 4. Health authority
+
+Health is per asset + feed, not global:
 
 ```text
-[[asset, sourceTimestampSeconds, price]]
+<= 5 s    HEALTHY
+<= 15 s   DEGRADED
+<= 60 s   STALE
+> 60 s    DATA_UNAVAILABLE
 ```
 
-Payout sequence:
+`continuityBroken = true` overrides age and immediately reports `DATA_UNAVAILABLE / CONTINUITY_BROKEN`.
+
+## 5. Multi-timeframe episode arbitration
+
+Timeframes:
 
 ```text
-451-["chafor",{"_placeholder":true,"num":0}]
-<binary UTF-8 JSON attachment>
+5s / 10s / 15s / 30s / 60s
 ```
 
-Attachment:
+Raw candidates are journaled, but correlated/overlapping decisions share one `marketEpisodeId`. Only a `PRIMARY` arbitration result may become a signal. Near-tied opposite directions fail closed as conflict.
+
+Frozen defaults:
 
 ```text
-[[asset, payoutPercent]]
+minModelScore = 0.35
+expirationSeconds = 60
+arbitrationConflictScoreMargin = 0.10
+episodeHorizonMs = 68000
+continuityGapAfterMs = 15000
 ```
 
-Historical bootstrap remains non-causal for live signals.
+## 6. Payout/economic semantics
 
-## 3. Tick and source semantics
-
-Tick schema v4 adds `protocolVerificationId`. VERIFIED source quality is valid only with a non-null registry evidence ID. The decision record (schema v3) stores the source protocol verification ID used at decision time.
-
-Pocket Option source time remains unsynchronized from browser epoch in the captured evidence, so `LOCAL_RECEIPT` remains the causal event time and transport latency remains null.
-
-## 4. Data-health watchdog
-
-The old latest-decision health display was insufficient because it could remain `HEALTHY` forever after the feed stopped. Release 1.4.0 adds wall-clock health independent from market arrival:
+`chafor` is verified as a payout value event but does not bind the value to an expiration in the observed protocol:
 
 ```text
-<= 5 s   HEALTHY
-<= 15 s  DEGRADED
-<= 60 s  STALE
-> 60 s   DATA_UNAVAILABLE
-```
-
-The watchdog runs on analytics refresh/export and through `chrome.alarms`. Pending entry/result deadlines are processed even when no market tick arrives. `FEED_STALE` and `DATA_UNAVAILABLE` are therefore real terminal reasons rather than unreachable enum values.
-
-## 5. Payout binding
-
-PayoutSnapshot schema v3 separates protocol verification from expiration binding:
-
-```text
-quality = VERIFIED        # observed chafor schema/value is verified
+quality = VERIFIED
 expirationBinding = UNBOUND
-expirationSeconds = null  # current captured chafor does not expose scope
+expirationSeconds = null
 ```
 
-Future eligibility requires `EXPLICIT_PROTOCOL` or `EXPLICIT_DOM` binding and an exact expiration match. No economic WIN/LOSS is produced while the payout is unbound.
+Economic return therefore remains unavailable. Directional reference evaluation is separate from economic eligibility.
 
-## 6. Pipeline and recovery
+## 7. Persistence and recovery
 
-The pipeline restores the latest persisted tick and latest payout-per-asset/feed on MV3 restart. The protocol registry version is part of the scientific config hash so changing registry authority necessarily changes configuration identity.
-
-IndexedDB version is 5.
-
-## 7. Dataset and replay
-
-Dataset schema v3 records:
-
-- source-tree SHA-256;
-- optional clean Git SHA;
-- config hashes;
-- protocol registry version;
-- verification IDs actually used;
-- export-time operational state/reason;
-- latest tick age at export;
-- complete append-only scientific journal;
-- deterministic dataset checksum/ID.
-
-Replay uses the same watchdog and quantitative pipeline as live mode.
-
-## 8. Dashboard
-
-Telemetry now separates:
+IndexedDB v7 stores append-only:
 
 ```text
-source quality / protocol verification
-current wall-clock operational state
-latest decision-time operational state
-watchdog reason and freshness thresholds
-payout protocol verification
-payout expiration binding
+ticks
+payout snapshots
+candles
+decisions
+entry resolutions
+decision-signal links
+signals
+results
+feed continuity events
+transport events
 ```
 
-This prevents a historical `HEALTHY` decision from being mistaken for a currently healthy feed.
+Runtime pending maps are caches only. Startup recovery derives unresolved work from the journal and refuses to resolve records across mismatched feed epochs.
 
-## 9. Validation gates
+## 8. Scientific dataset v5
+
+Export includes all quantitative records plus:
+
+```text
+continuityEvents
+transportEvents
+reconnectEventCount
+assetFeedHealthAtExport
+captureTransportAtExport
+sourceTreeSha256
+gitCommit when Git HEAD is available
+gitWorkingTreeClean
+checksumSha256
+datasetId
+```
+
+Authentication/session packets are never exported.
+
+## 9. Latest real-dataset regression
+
+The v1.5 dataset `ccb1e2896d74…` contained the observed hidden-tab interruption:
+
+```text
+last old tick: 1789235400427 / ws-3
+first recovered tick: 1789235682355 / ws-4
+gap: 281928 ms
+```
+
+Replaying all 1704 ticks through v1.6 produced two feed epochs. The source switch recorded the exact 281928 ms gap. The first post-recovery signal appeared 88394 ms after the recovered epoch began, rather than roughly 3 seconds after recovery as in v1.5.
+
+This validates fresh warmup and prevents pre-gap features from leaking across the outage.
+
+## 10. Validation gates
+
+Before release:
 
 ```text
 npm run typecheck
 npm test
 npm run build
 npm run validate:manifest
-npm run verify
 ```
 
-Sandbox result:
+Required static invariants:
 
 ```text
-typecheck: PASS
-tests: 23/23 PASS
-build: PASS
-manifest: PASS
+explicit any = 0
+Math.random = 0
+TODO/FIXME = 0
+order/trade event sender in production source = 0
+content-script market setTimeout = 0
+auth/session persistence in journal/export = 0
 ```
 
-Raw capture registry replay:
+## 11. Remaining empirical gate
 
-```text
-demo-api-eu:   234 price + 24 payout VERIFIED
-api-us-north:   38 price +  2 payout VERIFIED
-api-us-south:  127 price +  6 payout VERIFIED
-```
+The sandbox can validate code, replay captured data and verify protocol state machines, but it cannot authenticate a live Pocket Option browser session. Therefore live DEMO validation of the extension-owned shadow WebSocket is still required.
 
-Regression of the user-exported v1.3.0 session under v1.4.0 semantics:
+The empirical acceptance condition is:
 
-```text
-692 ticks
-140 decisions
-18 CALL/PUT
-15 CALL / 3 PUT
-18 signals
-18 entries resolved
-6 directional results resolved
-12 results DATA_UNAVAILABLE after feed loss
-economic sample 0
-export state DATA_UNAVAILABLE
-latest tick age at export 243836 ms
-```
-
-The 6 directional results contain 2 correct and 4 incorrect. This tiny descriptive sample is not scientific evidence of profitability.
-
-## 10. Frozen safety boundary
-
-No auto-trading, auto-click, CALL/PUT click, order submission or realized-P&L path is part of the project. Protocol verification only authorizes scientific signal processing of an observed feed schema; it does not authorize broker execution and does not establish strategy validity.
-
-
-## Phase 1.5 — focus resilience and statistical independence
-
-- Timer-free semantic transport: `runtime.Port` + microtask flush.
-- Disable automatic tab discard where Chrome permits and observe `frozen`/`discarded` lifecycle state.
-- Fail closed when the source tab is actually frozen; never synthesize missed ticks.
-- Health authority is per asset + feed.
-- Candles are feed-scoped.
-- MarketEpisodeArbitrator groups correlated multi-timeframe candidates and overlapping 60-second windows.
-- Only PRIMARY episode decisions can resolve an entry; correlated and ambiguous candidates remain immutable audit records.
-- Analytics separates raw candidate count from independent episode count and reports strategy/timeframe descriptive slices.
-- No threshold tuning is authorized by this phase.
+1. log into Pocket Option DEMO;
+2. verify shadow state reaches `STREAMING`;
+3. leave the broker tab hidden long enough that its chart would previously stop;
+4. confirm shadow ticks remain fresh and counters keep growing;
+5. if a socket is deliberately interrupted, confirm reconnect transport events and a new feed epoch are recorded;
+6. confirm no order event is ever sent by the extension.

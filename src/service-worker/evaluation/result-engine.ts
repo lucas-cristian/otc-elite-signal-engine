@@ -105,6 +105,10 @@ export class ResultEngine {
     };
   }
 
+  public invalidate(signal: SignalRecord, nowMs: number, reason: 'ASSET_FEED_LOST' | 'DATA_UNAVAILABLE'): ResultRecord {
+    return this.unresolved(signal, reason, nowMs, null);
+  }
+
   public timeout(signal: SignalRecord, nowMs: number, reason: 'EXPIRY_TIMEOUT' | 'ASSET_FEED_LOST' | 'DATA_UNAVAILABLE' = 'EXPIRY_TIMEOUT'): ResultRecord | null {
     if (nowMs <= signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs) return null;
     return this.unresolved(signal, reason, nowMs, null);

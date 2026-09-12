@@ -49,11 +49,12 @@ export class DecisionEngine {
         });
         const publishedAt = input.computedAt;
         return {
-            decisionSchemaVersion: '4',
+            decisionSchemaVersion: '5',
             decisionId,
             decisionGranularityKey,
             executionMode: this.config.executionMode,
             canonicalAssetId: input.canonicalAssetId,
+            feedEpochId: input.feedEpochId,
             timeframe: input.timeframe,
             decisionComputedAt: input.computedAt,
             decisionPublishedAt: publishedAt,
@@ -87,6 +88,7 @@ export class DecisionEngine {
     evaluationWindow(input) {
         const payload = {
             canonicalAssetId: input.canonicalAssetId,
+            feedEpochId: input.feedEpochId,
             timeframe: input.timeframe,
             candleStartTimestamp: input.candleStartTimestamp,
             windowStartTimestamp: input.candleStartTimestamp,

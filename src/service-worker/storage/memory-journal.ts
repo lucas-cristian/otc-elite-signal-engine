@@ -1,4 +1,6 @@
 import { canonicalJson } from '../../common/hashing/canonical-hash.js';
+import type { FeedContinuityEvent } from '../../common/models/feed-continuity.js';
+import type { TransportEventRecord } from '../../common/models/runtime-telemetry.js';
 import type { Candle, PayoutSnapshot, Tick } from '../../common/models/types.js';
 import type {
   DecisionRecord,
@@ -18,6 +20,8 @@ export class MemoryJournal implements JournalRepository {
   private readonly links = new Map<string, DecisionSignalLink>();
   private readonly signals = new Map<string, SignalRecord>();
   private readonly results = new Map<string, ResultRecord>();
+  private readonly continuity = new Map<string, FeedContinuityEvent>();
+  private readonly transport = new Map<string, TransportEventRecord>();
 
   public async appendTick(value: Tick): Promise<void> { this.append(this.ticks, value.tickId, value); }
   public async appendPayoutSnapshot(value: PayoutSnapshot): Promise<void> { this.append(this.payouts, `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`, value); }
@@ -27,6 +31,8 @@ export class MemoryJournal implements JournalRepository {
   public async appendDecisionSignalLink(value: DecisionSignalLink): Promise<void> { this.append(this.links, value.decisionId, value); }
   public async appendSignal(value: SignalRecord): Promise<void> { this.append(this.signals, value.signalId, value); }
   public async appendResult(value: ResultRecord): Promise<void> { this.append(this.results, value.signalId, value); }
+  public async appendContinuityEvent(value: FeedContinuityEvent): Promise<void> { this.append(this.continuity, value.continuityEventId, value); }
+  public async appendTransportEvent(value: TransportEventRecord): Promise<void> { this.append(this.transport, value.transportEventId, value); }
 
   public async snapshot(): Promise<JournalSnapshot> {
     return {
@@ -38,6 +44,8 @@ export class MemoryJournal implements JournalRepository {
       decisionSignalLinks: [...this.links.values()],
       signals: [...this.signals.values()],
       results: [...this.results.values()],
+      continuityEvents: [...this.continuity.values()],
+      transportEvents: [...this.transport.values()],
     };
   }
 
@@ -48,6 +56,6 @@ export class MemoryJournal implements JournalRepository {
   }
 
   private candleKey(candle: Candle): string {
-    return `${candle.canonicalAssetId}:${candle.feedId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
+    return `${candle.canonicalAssetId}:${candle.feedId}:${candle.feedEpochId}:${candle.timeframe}:${candle.startTimestamp}:${candle.lifecycle}`;
   }
 }

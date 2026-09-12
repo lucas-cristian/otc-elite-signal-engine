@@ -10,6 +10,7 @@ interface ActiveEpisode {
   marketEpisodeId: string;
   canonicalAssetId: string;
   feedId: string;
+  feedEpochId: string;
   direction: SignalDirection;
   primaryDecisionId: string;
   expiresAt: number;
@@ -41,7 +42,8 @@ export class MarketEpisodeArbitrator {
 
     const canonicalAssetId = candidates[0]?.canonicalAssetId;
     const feedId = candidates[0]?.sourceFeedId;
-    if (!canonicalAssetId || !feedId || candidates.some((decision) => decision.canonicalAssetId !== canonicalAssetId || decision.sourceFeedId !== feedId)) {
+    const feedEpochId = candidates[0]?.feedEpochId;
+    if (!canonicalAssetId || !feedId || !feedEpochId || candidates.some((decision) => decision.canonicalAssetId !== canonicalAssetId || decision.sourceFeedId !== feedId || decision.feedEpochId !== feedEpochId)) {
       return decisions.map((decision) => isCandidate(decision) ? this.suppress(decision, null, 'SUPPRESSED_CONFLICT', 'ARBITRATION_SOURCE_MISMATCH') : decision);
     }
 
@@ -62,6 +64,7 @@ export class MarketEpisodeArbitrator {
       const conflictId = canonicalEntityHash('MARKET_EPISODE_CONFLICT', 1, {
         canonicalAssetId,
         feedId,
+        feedEpochId,
         createdAt: nowMs,
         decisionIds: ordered.map((decision) => decision.decisionId).sort(),
       });
@@ -73,6 +76,7 @@ export class MarketEpisodeArbitrator {
     const marketEpisodeId = canonicalEntityHash('MARKET_EPISODE', 1, {
       canonicalAssetId,
       feedId,
+      feedEpochId,
       primaryDecisionId: top.decisionId,
       direction: top.finalDecision,
       startedAt: nowMs,
@@ -82,6 +86,7 @@ export class MarketEpisodeArbitrator {
       marketEpisodeId,
       canonicalAssetId,
       feedId,
+      feedEpochId,
       direction: top.finalDecision,
       primaryDecisionId: top.decisionId,
       expiresAt: nowMs + this.config.activeEpisodeHorizonMs,
@@ -103,6 +108,7 @@ export class MarketEpisodeArbitrator {
     marketEpisodeId: string;
     canonicalAssetId: string;
     feedId: string;
+    feedEpochId: string;
     direction: SignalDirection;
     primaryDecisionId: string;
     expiresAt: number;
@@ -111,6 +117,10 @@ export class MarketEpisodeArbitrator {
     const key = this.key(input.canonicalAssetId, input.feedId);
     const existing = this.activeByAssetFeed.get(key);
     if (!existing || input.expiresAt > existing.expiresAt) this.activeByAssetFeed.set(key, input);
+  }
+
+  public invalidateAssetFeed(canonicalAssetId: string, feedId: string): void {
+    this.activeByAssetFeed.delete(this.key(canonicalAssetId, feedId));
   }
 
   public activeEpisodeCount(nowMs: number): number {

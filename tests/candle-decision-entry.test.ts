@@ -21,7 +21,7 @@ function tick(ts: number, price: number, seq: number): Tick {
 
 test('candle gaps produce null OHLC and never carry prices forward', () => {
   const emitted: ReturnType<CandleBuilder['partial']>[] = [];
-  const builder = new CandleBuilder('EURUSDOTC', 'demo-api-eu.po.market', '5s', (candle) => emitted.push(candle));
+  const builder = new CandleBuilder('EURUSDOTC', 'demo-api-eu.po.market', 'epoch-1', '5s', (candle) => emitted.push(candle));
   builder.ingest(tick(0, 10, 0));
   builder.ingest(tick(15_000, 11, 1));
   const nonNull = emitted.filter((value): value is NonNullable<typeof value> => value !== null);
@@ -40,7 +40,7 @@ test('decision keeps calibratedProbability null and blocks degraded data', () =>
     features: { momentum3: 1, tickImbalance: 1, trendStrength: 1, persistence: 1, volatility: 0.001, expansion: 0 },
   };
   const decision = engine.evaluate({
-    canonicalAssetId: 'EURUSDOTC', timeframe: '5s', candleStartTimestamp: 0, candleEndTimestamp: 5000, computedAt: 5001,
+    canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe: '5s', candleStartTimestamp: 0, candleEndTimestamp: 5000, computedAt: 5001,
     features, regime: { structure: 'TREND_UP', volatility: 'NORMAL' }, eventIntegrity: 'VALID', operationalDataState: 'DEGRADED', sourceQuality: 'VERIFIED', sourceFeedId: 'demo-api-eu.po.market', sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM',
   });
   assert.equal(decision.calibratedProbability, null);
@@ -50,7 +50,7 @@ test('decision keeps calibratedProbability null and blocks degraded data', () =>
 
 test('entry resolver never uses a tick observed before alert publication', () => {
   const decision: DecisionRecord = {
-    decisionSchemaVersion: '4', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe: '5s',
+    decisionSchemaVersion: '5', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe: '5s',
     decisionComputedAt: 1000, decisionPublishedAt: 1000, alertPublishedAt: 1000, evaluationWindowId: 'e1', candleStartTimestamp: 0,
     candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.8, calibratedProbability: null, structureRegime: 'TREND_UP', volatilityRegime: 'NORMAL',
     strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceFeedId: 'demo-api-eu.po.market', sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
@@ -72,7 +72,7 @@ test('unverified protocol schema fails closed before CALL or PUT', () => {
     features: { momentum3: 1, tickImbalance: 1, trendStrength: 1, persistence: 1, volatility: 0.001, expansion: 0 },
   };
   const decision = engine.evaluate({
-    canonicalAssetId: 'EURUSDOTC', timeframe: '5s', candleStartTimestamp: 0, candleEndTimestamp: 5000, computedAt: 5001,
+    canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe: '5s', candleStartTimestamp: 0, candleEndTimestamp: 5000, computedAt: 5001,
     features, regime: { structure: 'TREND_UP', volatility: 'NORMAL' }, eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', sourceQuality: 'INFERRED', sourceFeedId: 'demo-api-eu.po.market', sourceProtocolVerificationId: null,
   });
   assert.equal(decision.finalDecision, 'NO_TRADE');

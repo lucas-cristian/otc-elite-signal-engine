@@ -52,6 +52,8 @@ export class ReplayEngine {
       decisionSignalLinks: dataset.decisionSignalLinks,
       signals: dataset.signals,
       results: dataset.results,
+      continuityEvents: dataset.continuityEvents,
+      transportEvents: dataset.transportEvents,
     };
     const checksum = sha256(new TextEncoder().encode(canonicalJson(body)));
     if (checksum !== dataset.manifest.checksumSha256) throw new Error('Dataset checksum mismatch');

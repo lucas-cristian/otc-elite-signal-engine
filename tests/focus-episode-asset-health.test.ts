@@ -8,7 +8,7 @@ import { MemoryJournal } from '../src/service-worker/storage/memory-journal.js';
 
 function decision(id: string, timeframe: DecisionRecord['timeframe'], direction: 'CALL' | 'PUT', score: number, at = 10_000): DecisionRecord {
   return {
-    decisionSchemaVersion: '4', decisionId: id, decisionGranularityKey: `g-${id}`, executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe,
+    decisionSchemaVersion: '5', decisionId: id, decisionGranularityKey: `g-${id}`, executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe,
     decisionComputedAt: at, decisionPublishedAt: at, alertPublishedAt: at, evaluationWindowId: `w-${id}`, candleStartTimestamp: at - 5_000,
     candidateDirection: direction, finalDecision: direction, modelScore: score, calibratedProbability: null, structureRegime: 'TREND_UP', volatilityRegime: 'NORMAL',
     strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceFeedId: 'demo-api-eu.po.market',

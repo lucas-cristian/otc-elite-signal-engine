@@ -1,29 +1,38 @@
 # OTC Elite Signal Engine
 
-OTC Elite Signal Engine is a signal-only quantitative research extension for Chrome Manifest V3. It observes Pocket Option OTC reference-feed market data, builds causal market state, evaluates versioned strategies, journals every decision, resolves reference entries/results, exports scientific datasets, and supports deterministic replay.
+OTC Elite Signal Engine is a signal-only Chrome Manifest V3 quantitative research extension for Pocket Option OTC reference-feed analysis. It observes market data, builds causal multi-timeframe state, evaluates versioned strategies, journals decisions, resolves reference entries/results, exports scientific datasets, and supports deterministic replay.
 
 ## Safety boundary
 
-The extension never clicks CALL/PUT, never sends orders, never executes trades, and never represents reference-feed outcomes as realized P&L. Protocol verification is independent from strategy profitability or scientific acceptance.
+The extension never clicks CALL/PUT, never sends `openOrder`, never executes a trade, and never reports reference-feed outcomes as realized P&L. Market transport recovery is restricted to authentication of a market-data socket and an explicit whitelist of subscription-only Socket.IO events.
 
-Release 1.5.0 freezes the exact Socket.IO binary protocol evidence captured on 2026-09-12 for `demo-api-eu.po.market`, `api-us-north.po.market`, and `api-us-south.po.market`. Verification is based on the exact host + event + parser schema + payload shape tuple, not on hostname alone. Unregistered `*.po.market` feeds remain `INFERRED` and fail closed before CALL/PUT.
+Authentication/session packets used by the recovery socket are ephemeral runtime context. They are not written to IndexedDB, extension storage, logs, datasets, build artifacts, or source control.
+
+## Release 1.6.0
+
+Release 1.6.0 adds two protections that are required for unattended data collection:
+
+1. **extension-owned shadow market WebSocket** — the Service Worker can keep receiving the verified Pocket Option market protocol even when the broker page's own chart/socket becomes idle in a hidden tab;
+2. **feed continuity epochs** — any disconnect, connection switch, page-session switch, or tick gap above the frozen continuity threshold ends the old quantitative epoch. Candles, features, regimes, pending entry/result work, and active market episodes cannot cross that boundary.
+
+Chrome 116+ is required because resilient WebSockets in extension Service Workers depend on the Chrome 116 lifecycle behavior.
 
 ## Verified protocol
 
-The observed transport is Engine.IO 4 / Socket.IO over WebSocket. Live market data uses a Socket.IO binary event header followed by one binary JSON attachment:
+The captured transport is Engine.IO 4 / Socket.IO over WebSocket. Live market data uses a binary Socket.IO header followed by one UTF-8 JSON attachment:
 
 ```text
 451-["updateStream",{"_placeholder":true,"num":0}]
 <binary attachment>
 ```
 
-The verified `updateStream` attachment is:
+Verified `updateStream` attachment:
 
 ```text
 [[asset, sourceTimestampSeconds, price]]
 ```
 
-Payout is delivered independently:
+Payout arrives independently through `chafor`:
 
 ```text
 451-["chafor",{"_placeholder":true,"num":0}]
@@ -36,19 +45,13 @@ with attachment:
 [[asset, payoutPercent]]
 ```
 
-`updateHistoryNewFast` is recognized and consumed as a historical bootstrap packet, but it is not converted into live decisions. Only assets ending in `_otc` are admitted into the OTC quantitative pipeline.
+`chafor` does not expose the payout expiration scope in the captured evidence, so payout remains `expirationBinding = UNBOUND` and is excluded from economic return calculations.
 
 ## Protocol Verification Registry
 
-`src/common/protocol/protocol-verification-registry.ts` is the frozen authority for protocol source quality. A market event is `VERIFIED` only when all of the following match a registry entry:
+`src/common/protocol/protocol-verification-registry.ts` is the frozen source-quality authority. `VERIFIED` requires an exact match on feed host, event kind, Socket.IO event name, parser schema, payload shape, and OTC semantics.
 
-- exact feed host;
-- event kind and Socket.IO event name;
-- parser schema ID;
-- exact payload shape ID;
-- OTC market semantics.
-
-Registry version `2026-09-12.1` contains evidence for the captured `updateStream` and `chafor` schemas on:
+Registry version `2026-09-12.1` contains captured evidence for:
 
 ```text
 demo-api-eu.po.market
@@ -56,182 +59,208 @@ api-us-north.po.market
 api-us-south.po.market
 ```
 
-Each registry entry contains an evidence ID, verification time, and SHA-256 of the original capture artifact. The raw capture is not distributed because it contains private account metadata. The hash preserves evidence identity without embedding those data in the repository.
+Unknown `*.po.market` endpoints may be structurally parsed, but remain `INFERRED` and fail closed before CALL/PUT.
 
-An unregistered Pocket Option host may still be structurally parsed, but its `sourceQuality` is `INFERRED`, its `protocolVerificationId` is `null`, and the Decision Engine adds `UNVERIFIED_SOURCE_SCHEMA`.
+## Resilient market transport
 
-## Architecture
+The normal path remains:
 
 ```text
-Pocket Option WebSocket
+Pocket Option page WebSocket
         ↓
 MAIN World interceptor
         ↓
-stateful Engine.IO / Socket.IO binary decoder
+strict Socket.IO binary decoder
         ↓
-Protocol Verification Registry
+semantic market events
         ↓
-strict updateStream / chafor semantic events
-        ↓
-ISOLATED World validation + semantic sequencing + batching
-        ↓
+ISOLATED content script
+        ↓ runtime.Port / microtask flush
 Service Worker QuantPipeline
-        ├── append-only IndexedDB journal
-        ├── wall-clock data-health watchdog
-        ├── 5s / 10s / 15s / 30s / 60s candles
-        ├── causal Feature Engine
-        ├── Structure + Volatility regime detection
-        ├── independent strategies
-        ├── capped evidence aggregation
-        ├── Decision → Entry → Signal → Result
-        ├── durable recovery
-        ├── reference-feed analytics
-        └── scientific dataset export / replay
 ```
 
-Raw production WebSocket payloads never cross the MAIN → ISOLATED boundary. Semantic sequence numbers are assigned only after successful semantic decoding, so ignored handshakes, heartbeat frames and historical packets cannot create sequence gaps.
+The recovery path is:
+
+```text
+Page observes market endpoint + auth + safe subscriptions
+        ↓ ephemeral only
+ISOLATED content script
+        ↓ runtime.Port
+Service Worker ShadowMarketConnection
+        ↓
+independent wss://*.po.market Socket.IO connection
+        ↓
+verified updateStream / chafor decoder
+        ↓
+QuantPipeline
+```
+
+Only these outbound subscription events are replayable by the shadow connection:
+
+```text
+changeSymbol
+subfor
+subscribeSymbol   # only *_otc
+ps
+```
+
+`auth` is allowed only as the captured authentication packet required to authenticate the market socket. It is never considered a replayable subscription. Any event outside the subscription whitelist—including `openOrder`—is rejected.
+
+The shadow connection implements Engine.IO ping/pong handling and automatic reconnect backoff:
+
+```text
+1 s → 2 s → 5 s → 10 s → 20 s
+```
+
+A market stream with no price for 15 seconds is treated as stalled and reconnected. The regular 30-second extension alarm provides an additional watchdog wake-up path.
+
+The page feed remains a fallback. Once the shadow feed is authenticated, streaming and fresh, duplicate page events for the same feed are ignored. If the shadow feed becomes unavailable, page events can take over, but that transport switch creates a new feed continuity epoch.
+
+## Feed continuity epochs
+
+A quantitative epoch is scoped by:
+
+```text
+canonicalAssetId
+feedId
+feedEpochId
+connectionId
+pageSessionId
+```
+
+A new epoch is mandatory when any of these continuity conditions occurs:
+
+- explicit WebSocket `CLOSE` or `ERROR`;
+- shadow socket stall;
+- connection ID changes;
+- page session changes;
+- tick gap > 15,000 ms.
+
+On an epoch boundary the runtime:
+
+- writes continuity evidence to the append-only journal;
+- invalidates pending entries/results fail-closed;
+- closes the active market episode;
+- resets hot tick/candle/feature/regime state;
+- starts a new deterministic `feedEpochId`;
+- marks the first recovered candle `GAP_AFFECTED`;
+- requires at least five fresh `CLEAN` closed candles before quantitative decisions can leave warmup.
+
+Therefore pre-gap history cannot be used to create a post-reconnection signal.
 
 ## Data-health watchdog
 
-Release 1.5.0 separates the current wall-clock health of the feed from the historical state stored on the latest decision. Health changes even if no new tick arrives.
-
-Frozen defaults:
+Health is tracked per `canonicalAssetId + feedId`:
 
 ```text
-HEALTHY          tick age <= 5 s
-DEGRADED         5 s < tick age <= 15 s
-STALE            15 s < tick age <= 60 s
-DATA_UNAVAILABLE tick age > 60 s
+<= 5 s    HEALTHY
+<= 15 s   DEGRADED
+<= 60 s   STALE
+> 60 s    DATA_UNAVAILABLE
 ```
 
-Before the first tick, the runtime is `INITIALIZING`; if no tick arrives for more than 60 seconds it becomes `DATA_UNAVAILABLE`.
+An explicit continuity break immediately reports `DATA_UNAVAILABLE / CONTINUITY_BROKEN`, even before the age threshold expires.
 
-The dashboard refresh path invokes the watchdog, and a Manifest V3 `chrome.alarms` watchdog runs periodically when the dashboard is not open. Overdue pending entries/results are finalized fail-closed; prolonged missing data at result expiry becomes `DATA_UNAVAILABLE` rather than remaining indefinitely healthy.
+## Independent market episodes
 
-## Scientific time model
+Raw eligible decisions are not treated as independent samples. Multi-timeframe candidates for the same market episode are arbitrated into one primary operational signal. Correlated and overlapping decisions remain in the scientific journal but are marked suppressed.
 
-Every Tick v4 preserves:
-
-- `sourceTimestampEpochMs`;
-- `receivedAtEpochMs`;
-- `receivedAtMonotonicMs`;
-- `eventTimestampEpochMs`;
-- `timestampBasis`;
-- `sourceClockSynchronized`;
-- `observedTimestampDeltaMs`;
-- `transportLatencyMs`;
-- `sourceQuality`;
-- `protocolVerificationId`.
-
-The captured Pocket Option source clock was approximately two hours ahead of the browser receipt clock with a stable offset. That offset is preserved in `observedTimestampDeltaMs`, but it is not called transport latency. Until explicit clock synchronization is validated, causal event time uses `LOCAL_RECEIPT`.
-
-## Payout semantics
-
-`chafor` is stored as an immutable PayoutSnapshot v3 independent of price packets. The observed frame does not identify an expiration duration, therefore:
+The frozen defaults include:
 
 ```text
-expirationSeconds = null
+minModelScore = 0.35
+expirationSeconds = 60
+episodeHorizonMs = 68000
+arbitrationConflictScoreMargin = 0.10
+```
+
+No threshold is automatically tuned from live outcomes.
+
+## Economic evaluation
+
+Economic evaluation is fail-closed. A directional result can be resolved independently, but economic return is eligible only when a payout is verified and explicitly bound to exactly the signal expiration.
+
+For the currently captured `chafor` schema:
+
+```text
+quality = VERIFIED
 expirationBinding = UNBOUND
+expirationSeconds = null
 ```
 
-`quality = VERIFIED` means that the `chafor` protocol event and value shape were verified. It does **not** mean that the payout was verified for a 60-second signal. Economic evaluation additionally requires an explicit expiration binding.
+so:
 
-Payout snapshots are keyed by asset and feed. Cross-feed payout reuse is prohibited.
-
-## Quantitative engine
-
-The Feature Engine includes momentum, velocity, acceleration, volatility, candle anatomy, rejection, persistence, tick imbalance, directional sequences, distance, compression, expansion, trend strength, final-seconds behavior, RSI Wilder, EMA, ATR true range, Stochastic, and Bollinger z-score.
-
-Strategies are independent and regime-aware: Momentum, Reversal, Exhaustion, Breakout and Rejection. Correlated evidence is grouped into capped evidence families. `modelScore` is not a probability. `calibratedProbability` remains `null` until valid OOS calibration exists.
-
-The default minimum model score remains `0.35`; release 1.5.0 does not lower it to manufacture more signals.
-
-## Journal and recovery
-
-IndexedDB stores immutable scientific records. Pending work is reconstructed after an MV3 Service Worker restart by set difference. Recovery also restores the latest tick used by the health watchdog and the latest feed-scoped payout snapshots.
-
-IndexedDB schema version 5 prevents Tick v4 / Decision v3 / PayoutSnapshot v3 semantics from mixing with older releases.
-
-## Result semantics
-
-The evaluation mode is `REFERENCE_FEED`.
-
-- `CORRECT` / `INCORRECT` / `FLAT` are directional reference outcomes.
-- Reference return is descriptive reference-feed evidence, not realized P&L.
-- Flat price does not become a broker refund unless platform settlement is independently verified.
-- Economic return is fail-closed.
-- Payout must be `VERIFIED`, have a non-null `protocolVerificationId`, have an explicit expiration binding, have a non-null expiration, and exactly match the signal expiration.
-- Current observed `chafor` snapshots remain `UNBOUND`, so they are not eligible for economic scoring.
-
-## Replay and export
-
-Dataset schema v3 contains source-tree/build provenance, protocol registry version, protocol verification IDs actually used, export-time operational health, tick age at export, config hashes, payout snapshots, ticks, candles, decisions, entries, signals, results and SHA-256 checksum.
-
-Replay interleaves payout snapshots and ticks chronologically through the same `QuantPipeline`. Export/replay finalize pending work through the dataset creation timestamp using the same watchdog semantics.
-
-## Development
-
-Requirements: Node.js 20+ and TypeScript 5.8.x.
-
-```bash
-npm ci
-npm run typecheck
-npm test
-npm run build
-npm run validate:manifest
+```text
+economicOutcome = UNKNOWN
+economicReturn = null
 ```
 
-Or:
+## Scientific dataset
+
+Dataset schema v5 includes:
+
+- ticks and payout snapshots;
+- candles;
+- decisions and arbitration metadata;
+- entry resolutions, signals and results;
+- feed continuity history;
+- transport lifecycle/reconnect history;
+- asset/feed health at export;
+- capture/shadow transport state;
+- source-tree SHA-256 and Git HEAD/working-tree state when available;
+- canonical dataset checksum and ID.
+
+The dataset never contains the shadow authentication packet or account session secret.
+
+## Schema versions
+
+```text
+Application              1.6.0
+Tick                     v4
+Candle                   v4
+Decision                 v5
+Signal                   v4
+PayoutSnapshot           v3
+Result                   v3
+FeedContinuityEvent      v1
+CaptureTransportSnapshot v2
+TransportEvent           v1
+Dataset                  v5
+IndexedDB                v7
+```
+
+The IndexedDB version bump intentionally clears incompatible pre-1.6 runtime records once after upgrade.
+
+## Build and validation
+
+Requirements:
+
+```text
+Chrome 116+
+Node.js 20+
+```
+
+Run:
 
 ```bash
 npm run verify
 ```
 
-## Load in Chrome
+`verify` executes strict TypeScript typecheck, the invariant test suite, deterministic build, and Manifest V3 validation.
 
-1. Run `npm run build`.
-2. Open `chrome://extensions`.
-3. Enable Developer mode.
-4. Choose **Load unpacked**.
-5. Select `dist/`.
-6. Open Pocket Option.
-7. Keep `protocolMode` as `PRODUCTION` for frozen schemas; use `PROTOCOL_DISCOVERY` only when investigating an unregistered host/schema.
-8. Do not add a new host to the registry without a captured regression artifact.
+Load `dist/` as an unpacked extension through `chrome://extensions`.
 
-## Validation status
+## Runtime validation for v1.6
 
-Release 1.5.0 validation on 2026-09-12:
+The shadow transport state machine is validated by tests and was built from the captured Pocket Option Engine.IO/Socket.IO protocol. A live authenticated shadow connection still must be verified inside Chrome against the user's Pocket Option DEMO session because the sandbox cannot authenticate to the broker.
 
-- TypeScript strict typecheck: PASS
-- Unit/invariant tests: 23/23 PASS
-- Build: PASS
-- Manifest MV3 validation: PASS
-- Raw capture registry replay after exact de-duplication:
-  - `demo-api-eu.po.market`: 234 verified price events + 24 verified payout events
-  - `api-us-north.po.market`: 38 verified price events + 2 verified payout events
-  - `api-us-south.po.market`: 127 verified price events + 6 verified payout events
-- v1.3.0 real-session dataset regression through v1.4.0 semantics:
-  - 692 ticks
-  - 140 decisions
-  - 18 CALL/PUT decisions without lowering the score threshold
-  - 15 CALL / 3 PUT
-  - 15 signals on 5s / 3 signals on 10s
-  - 18 resolved entries
-  - 6 resolved directional results and 12 `DATA_UNAVAILABLE` results after feed loss
-  - directional sample 6: 2 correct / 4 incorrect (33.33%); descriptive only and far too small for scientific acceptance
-  - economic sample 0 because payout expiration remains explicitly unbound
-  - export health `DATA_UNAVAILABLE`, with latest tick age 243.836 seconds
-- No auto-trading, auto-click or broker order-execution path exists
+Expected dashboard state after successful DEMO validation:
 
-Protocol verification is not evidence of trading profitability. Strategy acceptance still requires sufficient OOS/holdout evidence under the frozen scientific protocol.
+```text
+Shadow market socket: true
+Shadow state: STREAMING
+Shadow endpoint: demo-api-eu.po.market
+Current operational state: HEALTHY
+```
 
-
-## Focus-resilient capture (1.5.0)
-
-The ISOLATED transport no longer depends on `setTimeout` for market delivery. Semantic events are delivered through a long-lived `chrome.runtime.Port` and flushed with `queueMicrotask`, so background timer throttling does not delay the market pipeline. The service worker marks source tabs `autoDiscardable = false` and records Chrome tab lifecycle telemetry (`visibility`, `frozen`, `discarded`, transport connection and last semantic event). A truly frozen tab cannot execute page/content-script handlers; in that state the engine fails closed through the per-asset/feed watchdog instead of reporting stale data as healthy.
-
-## Asset/feed health and independent market episodes (1.5.0)
-
-Health is tracked by `(canonicalAssetId, feedId)`. Activity on EURUSD cannot keep EURJPY healthy. Candles are also feed-scoped. Eligible multi-timeframe decisions are arbitrated into a single independent `marketEpisodeId`; one PRIMARY decision can become a signal and correlated/overlapping decisions are retained as NO_TRADE audit records with explicit arbitration blockers. The score threshold remains `0.35`.
-
-Analytics reports raw candidate decisions separately from independent market episodes, plus performance by primary timeframe and contributing strategy.
+With the broker tab hidden, ticks should continue increasing even if the broker page's own chart stops updating. If the shadow socket falls, transport events and continuity events must record the outage and reconnect instead of silently joining pre-gap and post-gap observations.

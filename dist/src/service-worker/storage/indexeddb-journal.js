@@ -14,7 +14,7 @@ function transactionDone(transaction) {
 }
 export async function openJournalDatabase() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('otc-elite-signal-engine', 6);
+        const request = indexedDB.open('otc-elite-signal-engine', 7);
         request.onupgradeneeded = () => {
             const db = request.result;
             for (const name of Array.from(db.objectStoreNames))
@@ -27,6 +27,8 @@ export async function openJournalDatabase() {
             db.createObjectStore('decisionSignalLinks', { keyPath: 'decisionId' });
             db.createObjectStore('signals', { keyPath: 'signalId' });
             db.createObjectStore('results', { keyPath: 'signalId' });
+            db.createObjectStore('continuityEvents', { keyPath: 'continuityEventId' });
+            db.createObjectStore('transportEvents', { keyPath: 'transportEventId' });
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error ?? new Error('Unable to open IndexedDB'));
@@ -40,7 +42,7 @@ export class IndexedDbJournal {
     appendTick(value) { return this.appendImmutable('ticks', value.tickId, value); }
     appendPayoutSnapshot(value) { const key = `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`; return this.appendImmutable('payoutSnapshots', key, { key, payout: value }); }
     appendCandle(value) {
-        const key = `${value.canonicalAssetId}:${value.feedId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
+        const key = `${value.canonicalAssetId}:${value.feedId}:${value.feedEpochId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
         return this.appendImmutable('candles', key, { key, candle: value });
     }
     appendDecision(value) { return this.appendImmutable('decisions', value.decisionId, value); }
@@ -48,8 +50,10 @@ export class IndexedDbJournal {
     appendDecisionSignalLink(value) { return this.appendImmutable('decisionSignalLinks', value.decisionId, value); }
     appendSignal(value) { return this.appendImmutable('signals', value.signalId, value); }
     appendResult(value) { return this.appendImmutable('results', value.signalId, value); }
+    appendContinuityEvent(value) { return this.appendImmutable('continuityEvents', value.continuityEventId, value); }
+    appendTransportEvent(value) { return this.appendImmutable('transportEvents', value.transportEventId, value); }
     async snapshot() {
-        const [ticks, storedPayouts, storedCandles, decisions, entries, links, signals, results] = await Promise.all([
+        const [ticks, storedPayouts, storedCandles, decisions, entries, links, signals, results, continuityEvents, transportEvents] = await Promise.all([
             this.all('ticks'),
             this.all('payoutSnapshots'),
             this.all('candles'),
@@ -58,6 +62,8 @@ export class IndexedDbJournal {
             this.all('decisionSignalLinks'),
             this.all('signals'),
             this.all('results'),
+            this.all('continuityEvents'),
+            this.all('transportEvents'),
         ]);
         return {
             ticks,
@@ -68,6 +74,8 @@ export class IndexedDbJournal {
             decisionSignalLinks: links,
             signals,
             results,
+            continuityEvents,
+            transportEvents,
         };
     }
     async appendImmutable(storeName, key, value) {

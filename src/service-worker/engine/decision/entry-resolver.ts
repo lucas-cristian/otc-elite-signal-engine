@@ -65,6 +65,7 @@ export class EntryResolver {
     };
     const fingerprint = canonicalEntityHash('SIGNAL_FINGERPRINT', 2, {
       canonicalAssetId: decision.canonicalAssetId,
+      feedEpochId: decision.feedEpochId,
       evaluationWindowId: decision.evaluationWindowId,
       structureRegime: decision.structureRegime,
       volatilityRegime: decision.volatilityRegime,
@@ -79,11 +80,12 @@ export class EntryResolver {
       entryTickId: tick.tickId,
     });
     const signal: SignalRecord = {
-      signalSchemaVersion: '3',
+      signalSchemaVersion: '4',
       signalId,
       signalFingerprint: fingerprint,
       decisionId: decision.decisionId,
       marketEpisodeId: decision.marketEpisodeId,
+      feedEpochId: decision.feedEpochId,
       executionMode: decision.executionMode,
       canonicalAssetId: decision.canonicalAssetId,
       direction: decision.finalDecision,
@@ -97,6 +99,10 @@ export class EntryResolver {
       signalCreatedAt: tick.receivedAtEpochMs,
     };
     return { entry, signal };
+  }
+
+  public invalidate(decision: DecisionRecord, nowMs: number, reason: EntryUnresolvedReason): EntryResolutionRecord {
+    return this.unresolved(decision, reason, nowMs);
   }
 
   public timeout(decision: DecisionRecord, nowMs: number, reason: EntryUnresolvedReason = 'ENTRY_TIMEOUT'): EntryResolutionRecord | null {

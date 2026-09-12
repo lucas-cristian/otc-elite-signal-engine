@@ -87,6 +87,9 @@ export class ResultEngine {
             evaluatedAt: tick.receivedAtEpochMs,
         };
     }
+    invalidate(signal, nowMs, reason) {
+        return this.unresolved(signal, reason, nowMs, null);
+    }
     timeout(signal, nowMs, reason = 'EXPIRY_TIMEOUT') {
         if (nowMs <= signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs)
             return null;
