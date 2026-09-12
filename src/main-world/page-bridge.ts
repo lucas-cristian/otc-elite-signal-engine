@@ -80,10 +80,12 @@ function setupPageBridge() {
         }
 
         
-        if ((window as any).__loggedFrames === undefined) { (window as any).__loggedFrames = 0; }
-        if ((window as any).__loggedFrames < 3) {
-           console.log("[PageBridge] Raw Frame Payload: ", typeof event.data, event.data.toString().substring(0,200));
-           (window as any).__loggedFrames++;
+        if (typeof event.data === 'string' && event.data.startsWith('42[')) {
+          if (!((window as any).__loggedUpdates)) { (window as any).__loggedUpdates = 0; }
+          if ((window as any).__loggedUpdates < 5) {
+             console.log("[PageBridge] Market Data Event: ", event.data.substring(0,250));
+             (window as any).__loggedUpdates++;
+          }
         }
         emitEvent({
           type: 'PRICE_FRAME',

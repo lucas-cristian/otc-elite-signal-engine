@@ -1,56 +1,80 @@
 import { Tick } from '../common/models/types';
 
+function createTick(assetName: string, p: number): Tick {
+  return {
+    tickSchemaVersion: '1.0',
+    tickId: 'tick_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    marketSourceIdentity: {
+      marketSourceIdentitySchemaVersion: '1.0',
+      platform: 'POCKET_OPTION',
+      asset: assetName,
+      marketType: 'OTC',
+      source: 'WS_JSON',
+      feedId: null,
+      instrumentId: null,
+      parserSchemaId: 'GENERIC_JSON'
+    },
+    pageSessionId: 'session_1',
+    eventTimestamp: Date.now(),
+    price: p,
+    timestampBasis: 'LOCAL_RECEIVED'
+  };
+}
+
 export async function parseFrame(payloadBuffer: Uint8Array): Promise<Tick | null> {
   try {
     const text = new TextDecoder().decode(payloadBuffer);
     
-    // Filtro básico para evitar processar mensagens irrelevantes
-    if (!text.includes('price') && !text.includes('rate')) return null;
-
-    // Pocket Option geralmente envia os preços em arrays de atualização do Socket.io ou JSON direto
-    // Tentativa de achar um padrão genérico para ativos OTC
+    // Processa apenas as mensagens de dados (42)
+    if (!text.startsWith('42[')) return null;
     
-    // 1. Tentar parsear JSON direto (se for uma string JSON válida)
-    let data: any = null;
+    const jsonStr = text.substring(2);
+    let data: any;
     try {
-      // socket.io pode prefixar com "42" (message)
-      if (text.startsWith('42')) {
-        data = JSON.parse(text.substring(2));
-      } else {
-        data = JSON.parse(text);
-      }
-    } catch(e) {
-      // Ignorar e tentar regex
-    }
+      data = JSON.parse(jsonStr);
+    } catch(e) { return null; }
 
-    if (data && Array.isArray(data) && data.length > 1) {
-      const payload = data[1];
-      // Adaptar dependendo da estrutura real da corretora
+    if (!Array.isArray(data) || data.length < 2) return null;
+
+    const eventName = data[0];
+    const payload = data[1];
+
+    if (!payload || typeof payload !== 'object') return null;
+
+    // Caso 1: Evento direto de "update"
+    if (eventName === 'update' || eventName === 'price_update') {
       const asset = payload.asset || payload.symbol;
       const price = payload.price || payload.rate || payload.val;
       
       if (asset && price && typeof price === 'number') {
-        return {
-          asset: String(asset).replace('_otc', ' OTC'),
-          timestamp: Date.now(),
-          price: price
-        };
+        return createTick(String(asset).replace('_otc', ' OTC'), price);
       }
     }
-
-    // 2. Fallback: Regex genérico para caçar "asset":"EURUSD_otc" e "price":1.2345
-    const assetMatch = text.match(/"(?:asset|symbol)"\s*:\s*"([A-Z0-9_]+)"/);
-    const priceMatch = text.match(/"(?:price|rate|val)"\s*:\s*([0-9]+\.[0-9]+)/);
     
-    if (assetMatch && priceMatch) {
-      return {
-        asset: assetMatch[1].replace('_otc', ' OTC'),
-        timestamp: Date.now(),
-        price: parseFloat(priceMatch[1])
-      };
+    // Caso 2: Evento de "updateHistoryNew" (quando abre o grafico)
+    if (eventName === 'updateHistoryNew' && Array.isArray(payload.history) && payload.history.length > 0) {
+      const asset = payload.asset || payload.symbol;
+      const lastTick = payload.history[payload.history.length - 1];
+      const price = lastTick.price || lastTick[1];
+      
+      if (asset && price && typeof price === 'number') {
+        return createTick(String(asset).replace('_otc', ' OTC'), price);
+      }
     }
+    
+    // Caso 3: Fallback generico para qualquer array estruturado 
+    if (payload.symbol && payload.price && typeof payload.price === 'number') {
+      if (eventName.includes('chat') || eventName.includes('alert')) return null;
+      return createTick(String(payload.symbol).replace('_otc', ' OTC'), payload.price);
+    }
+    
+    if (payload.asset && payload.price && typeof payload.price === 'number') {
+      if (eventName.includes('chat') || eventName.includes('alert')) return null;
+      return createTick(String(payload.asset).replace('_otc', ' OTC'), payload.price);
+    }
+
   } catch (err) {
-    // Fail-Closed behavior
+    // Fail-Closed
   }
   return null;
 }
