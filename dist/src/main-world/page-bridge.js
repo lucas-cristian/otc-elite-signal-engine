@@ -130,7 +130,7 @@ class MainWorldShadowMarketConnection {
             this.socket = socket;
             socket.addEventListener('open', () => {
                 this.state = 'ENGINE_OPEN';
-                this.emit({ type: 'CONNECTION', connectionId, event: 'OPEN', feedHost: endpointHost(this.endpointUrl), receivedAtEpochMs: Date.now() });
+                this.emit({ type: 'CONNECTION', connectionId, transportRole: 'SHADOW', event: 'OPEN', feedHost: endpointHost(this.endpointUrl), receivedAtEpochMs: Date.now() });
                 this.emitTransport('SHADOW_WS_OPEN', null, connectionId);
             });
             socket.addEventListener('message', (event) => {
@@ -142,7 +142,7 @@ class MainWorldShadowMarketConnection {
                 this.socket = null;
                 this.decoder = null;
                 this.primary = false;
-                this.emit({ type: 'CONNECTION', connectionId, event: 'CLOSE', feedHost: endpointHost(this.endpointUrl), receivedAtEpochMs: Date.now() });
+                this.emit({ type: 'CONNECTION', connectionId, transportRole: 'SHADOW', event: 'CLOSE', feedHost: endpointHost(this.endpointUrl), receivedAtEpochMs: Date.now() });
                 this.emitTransport('SHADOW_WS_CLOSE', expected ? 'EXPECTED_CLOSE' : 'UNEXPECTED_CLOSE', connectionId);
                 if (!expected && this.state !== 'CIRCUIT_OPEN')
                     this.scheduleReconnect('UNEXPECTED_CLOSE');
@@ -394,10 +394,10 @@ function setupPageBridge() {
             shadow.observeEndpoint(this.endpointUrl);
             this.addEventListener('open', () => {
                 shadow.observePageConnectionOpen(this.endpointUrl);
-                emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'OPEN', feedHost: this.feedHost, receivedAtEpochMs: Date.now() });
+                emit({ type: 'CONNECTION', connectionId: this.connectionId, transportRole: 'PAGE', event: 'OPEN', feedHost: this.feedHost, receivedAtEpochMs: Date.now() });
             });
-            this.addEventListener('close', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'CLOSE', feedHost: this.feedHost, receivedAtEpochMs: Date.now() }));
-            this.addEventListener('error', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'ERROR', feedHost: this.feedHost, receivedAtEpochMs: Date.now() }));
+            this.addEventListener('close', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, transportRole: 'PAGE', event: 'CLOSE', feedHost: this.feedHost, receivedAtEpochMs: Date.now() }));
+            this.addEventListener('error', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, transportRole: 'PAGE', event: 'ERROR', feedHost: this.feedHost, receivedAtEpochMs: Date.now() }));
             this.addEventListener('message', (event) => {
                 const timing = { receivedAtEpochMs: Date.now(), receivedAtMonotonicMs: performance.now() };
                 this.inboundQueue = this.inboundQueue.then(() => this.processInbound(event.data, timing)).catch(() => undefined);

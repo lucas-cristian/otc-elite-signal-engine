@@ -14,7 +14,7 @@ function transactionDone(transaction) {
 }
 export async function openJournalDatabase() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('otc-elite-signal-engine', 8);
+        const request = indexedDB.open('otc-elite-signal-engine', 9);
         request.onupgradeneeded = () => {
             const db = request.result;
             for (const name of Array.from(db.objectStoreNames))

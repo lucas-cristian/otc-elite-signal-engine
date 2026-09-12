@@ -32,12 +32,18 @@ function sourceTreeHash() {
 }
 
 function gitState() {
+  const environmentCommit = process.env.OTC_GIT_COMMIT || process.env.GITHUB_SHA || null;
   try {
-    const gitCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return { gitCommit, gitWorkingTreeClean: status.length === 0 };
+    const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const gitCommit = execFileSync('git', ['-C', gitRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    const status = execFileSync('git', ['-C', gitRoot, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return { gitCommit, gitWorkingTreeClean: status.length === 0, gitProvenance: 'GIT' };
   } catch {
-    return { gitCommit: null, gitWorkingTreeClean: null };
+    return {
+      gitCommit: environmentCommit,
+      gitWorkingTreeClean: null,
+      gitProvenance: environmentCommit === null ? 'UNAVAILABLE' : 'ENVIRONMENT',
+    };
   }
 }
 
@@ -50,6 +56,7 @@ const buildMetadata = {
   sourceTreeSha256,
   gitCommit: git.gitCommit,
   gitWorkingTreeClean: git.gitWorkingTreeClean,
+  gitProvenance: git.gitProvenance,
 };
 
 rmSync('dist', { recursive: true, force: true });

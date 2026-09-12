@@ -2,7 +2,7 @@
 
 ## Status
 
-Release: **1.7.0**
+Release: **1.8.0**
 
 Protocol registry: **2026-09-12.1**
 
@@ -26,15 +26,9 @@ The ISOLATED route uses microtask flushing and no page timer for market delivery
 
 ### Shadow market transport
 
-The Service Worker receives ephemeral recovery context from the already-authenticated page:
+The MAIN World observes ephemeral recovery context from the already-authenticated page and owns the independent native shadow WebSocket. Authentication never crosses into the Service Worker.
 
-```text
-market endpoint
-auth packet
-safe subscription packets
-```
-
-It opens an independent market WebSocket and performs the observed Engine.IO/Socket.IO handshake. It may replay only:
+The MAIN-world shadow may replay only:
 
 ```text
 changeSymbol
@@ -45,9 +39,9 @@ ps
 
 Trade/order events are outside the whitelist and cannot be sent by the MAIN-world shadow market connection.
 
-Auth/session context is memory-only and excluded from storage, journal, logs and dataset export.
+Auth/session context is MAIN-world memory-only and excluded from the isolated world, Service Worker, storage, journal, logs and dataset export.
 
-Reconnect backoff is 1/2/5/10/20 seconds. A 15-second price silence is a stall. Chrome 116+ is required for resilient extension Service Worker WebSockets.
+Reconnect backoff is 1/2/5/10/20 seconds. MAIN World is the reconnect authority. The Service Worker supervises only a genuinely stale STREAMING socket and never schedules a second reconnect while MAIN World is already in BACKOFF or handshake states.
 
 ## 2. Protocol authority
 
@@ -76,21 +70,36 @@ Unknown feeds remain `INFERRED` and fail closed.
 
 Every asset/feed owns a deterministic `feedEpochId`.
 
-Epoch-breaking conditions:
+A transport connection ID is not itself an epoch boundary.
+
+Short reconnect policy:
 
 ```text
-explicit CLOSE / ERROR
-shadow stall
-connection ID change
-pageSessionId change
-tick gap > 15 s
+same page session
+same verified asset/feed identity
+gap <= 15 s
+→ same feedEpochId
+→ CONNECTION_LOST evidence
+→ SHORT_RECONNECT_GAP evidence on recovery
+→ mark boundary candles GAP_AFFECTED
+→ preserve causally valid pending results
+→ no full warmup reset
 ```
 
-On break:
+Hard epoch-breaking conditions:
 
 ```text
-persist continuity event
-invalidate pending entry/result
+tick/connection gap > 15 s
+pageSessionId change
+confirmed connection loss beyond grace
+incompatible source/feed transition
+```
+
+On a hard break:
+
+```text
+persist continuity evidence
+invalidate pending work fail-closed
 invalidate active market episode
 reset hot ticks/candles/features/regimes
 start new feed epoch
@@ -98,7 +107,7 @@ first recovered candle = GAP_AFFECTED
 fresh warmup required
 ```
 
-The model requires five fresh CLEAN closed candles before leaving warmup. No pre-gap feature history may cross an epoch.
+Feature calculation consumes CLEAN closed candles only; GAP_AFFECTED candles remain in the journal but do not masquerade as clean evidence.
 
 ## 4. Health authority
 
@@ -147,7 +156,7 @@ Economic return therefore remains unavailable. Directional reference evaluation 
 
 ## 7. Persistence and recovery
 
-IndexedDB v7 stores append-only:
+IndexedDB v9 stores append-only:
 
 ```text
 ticks
@@ -164,7 +173,7 @@ transport events
 
 Runtime pending maps are caches only. Startup recovery derives unresolved work from the journal and refuses to resolve records across mismatched feed epochs.
 
-## 8. Scientific dataset v5
+## 8. Scientific dataset v7
 
 Export includes all quantitative records plus:
 
@@ -185,17 +194,47 @@ Authentication/session packets are never exported.
 
 ## 9. Latest real-dataset regression
 
-The v1.5 dataset `ccb1e2896d74…` contained the observed hidden-tab interruption:
+The v1.7 dataset `70139cc59ff3…` contains 2301 ticks collected while the broker tab was hidden and the MAIN-world shadow remained functional.
+
+Observed transport instances:
 
 ```text
-last old tick: 1789235400427 / ws-3
-first recovered tick: 1789235682355 / ws-4
-gap: 281928 ms
+ws-3
+shadow-main-1
+shadow-main-2
+shadow-main-3
+shadow-main-4
+shadow-main-5
+shadow-main-6
+shadow-main-7
 ```
 
-Replaying all 1704 ticks through v1.6 produced two feed epochs. The source switch recorded the exact 281928 ms gap. The first post-recovery signal appeared 88394 ms after the recovered epoch began, rather than roughly 3 seconds after recovery as in v1.5.
+The measured transport-switch gaps were:
 
-This validates fresh warmup and prevents pre-gap features from leaking across the outage.
+```text
+71 ms
+6044 ms
+5380 ms
+6012 ms
+5024 ms
+4509 ms
+4533 ms
+```
+
+All are below the frozen 15000 ms continuity threshold.
+
+Replaying all 2301 ticks through v1.8 therefore produces:
+
+```text
+feed epochs: 1
+SHORT_RECONNECT_GAP events: 7
+hard epoch resets from those short reconnects: 0
+signals: 14
+results resolved by export horizon: 13
+ASSET_FEED_LOST caused by those short gaps: 0
+```
+
+The same v1.7 runtime had discarded five results as `ASSET_FEED_LOST` because every socket close was treated as a hard epoch break. v1.8 preserves the scientific epoch for short verified reconnects and marks only the gap boundary as affected.
 
 ## 10. Validation gates
 
@@ -221,13 +260,14 @@ auth/session persistence in journal/export = 0
 
 ## 11. Remaining empirical gate
 
-The sandbox can validate code, replay captured data and verify protocol state machines, but it cannot authenticate a live Pocket Option browser session. Therefore live DEMO validation of the MAIN-world native shadow WebSocket is still required.
+Live DEMO validation has already confirmed that the MAIN-world shadow can authenticate, reach `STREAMING`, remain primary while the source tab is hidden, and reconnect repeatedly without namespace rejection.
 
-The empirical acceptance condition is:
+The remaining v1.8 acceptance test is narrower:
 
-1. log into Pocket Option DEMO;
-2. verify shadow state reaches `STREAMING`;
-3. leave the broker tab hidden long enough that its chart would previously stop;
-4. confirm shadow ticks remain fresh and counters keep growing;
-5. if a socket is deliberately interrupted, confirm reconnect transport events and a new feed epoch are recorded;
-6. confirm no order event is ever sent by the extension.
+1. load a locally rebuilt v1.8 extension;
+2. keep the Pocket Option DEMO tab hidden through multiple periodic server-driven shadow reconnects;
+3. confirm the same `feedEpochId` survives reconnects whose measured tick gap is <= 15 seconds;
+4. confirm `SHORT_RECONNECT_GAP` appears and only boundary candles become `GAP_AFFECTED`;
+5. confirm pending results are not marked `ASSET_FEED_LOST` solely because of those short reconnects;
+6. force or observe a gap above 15 seconds and confirm that it still starts a new epoch with fresh warmup;
+7. confirm no order event is ever sent by the extension.

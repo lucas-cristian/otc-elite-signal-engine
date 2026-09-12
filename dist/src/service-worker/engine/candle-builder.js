@@ -8,6 +8,7 @@ export class CandleBuilder {
     firstCandleGapAffected;
     state = null;
     firstCandle = true;
+    nextCandleGapAffected = false;
     constructor(canonicalAssetId, feedId, feedEpochId, timeframe, emitter, firstCandleGapAffected = false) {
         this.canonicalAssetId = canonicalAssetId;
         this.feedId = feedId;
@@ -19,13 +20,18 @@ export class CandleBuilder {
     ingest(tick) {
         const bucket = alignToCandleStart(tick.eventTimestampEpochMs, this.timeframe);
         if (!this.state) {
-            this.state = this.open(bucket, tick, this.firstCandle && this.firstCandleGapAffected);
+            this.state = this.open(bucket, tick, (this.firstCandle && this.firstCandleGapAffected) || this.nextCandleGapAffected);
             this.firstCandle = false;
+            this.nextCandleGapAffected = false;
             return;
         }
         if (bucket < this.state.start)
             return;
         if (bucket === this.state.start) {
+            if (this.nextCandleGapAffected) {
+                this.state.gapAffected = true;
+                this.nextCandleGapAffected = false;
+            }
             this.state.high = Math.max(this.state.high, tick.price);
             this.state.low = Math.min(this.state.low, tick.price);
             this.state.close = tick.price;
@@ -40,7 +46,13 @@ export class CandleBuilder {
         const missing = Math.max(0, Math.floor((bucket - previous.start) / size) - 1);
         for (let index = 1; index <= missing; index++)
             this.emitEmpty(previous.start + index * size);
-        this.state = this.open(bucket, tick, missing > 0);
+        this.state = this.open(bucket, tick, missing > 0 || this.nextCandleGapAffected);
+        this.nextCandleGapAffected = false;
+    }
+    markTransportGap() {
+        if (this.state)
+            this.state.gapAffected = true;
+        this.nextCandleGapAffected = true;
     }
     advanceClock(epochMs) {
         if (!this.state)

@@ -3,10 +3,11 @@ export type FeedContinuityEventType =
   | 'EPOCH_ENDED'
   | 'GAP_DETECTED'
   | 'CONNECTION_LOST'
-  | 'SOURCE_SWITCH';
+  | 'SOURCE_SWITCH'
+  | 'SHORT_RECONNECT_GAP';
 
 export interface FeedContinuityEvent {
-  feedContinuityEventSchemaVersion: '1';
+  feedContinuityEventSchemaVersion: '2';
   continuityEventId: string;
   canonicalAssetId: string;
   feedId: string;

@@ -32,7 +32,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 
 export async function openJournalDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('otc-elite-signal-engine', 8);
+    const request = indexedDB.open('otc-elite-signal-engine', 9);
     request.onupgradeneeded = () => {
       const db = request.result;
       for (const name of Array.from(db.objectStoreNames)) db.deleteObjectStore(name);

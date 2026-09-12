@@ -29,6 +29,7 @@ export class ReplayEngine {
             sourceTreeSha256: dataset.manifest.sourceTreeSha256 ?? null,
             gitCommit: dataset.manifest.gitCommit,
             gitWorkingTreeClean: dataset.manifest.gitWorkingTreeClean ?? null,
+            gitProvenance: dataset.manifest.gitProvenance ?? 'UNAVAILABLE',
             createdAt: dataset.manifest.createdAt,
             operationalHealth,
             assetFeedHealth: pipeline.getAllAssetFeedOperationalHealth(dataset.manifest.createdAt),

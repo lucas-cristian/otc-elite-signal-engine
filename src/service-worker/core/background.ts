@@ -14,6 +14,7 @@ interface BuildMetadata {
   sourceTreeSha256: string | null;
   gitCommit: string | null;
   gitWorkingTreeClean: boolean | null;
+  gitProvenance: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
 }
 
 interface RuntimeContext {
@@ -36,7 +37,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function defaultCapture(tabId: number | null): CaptureTransportSnapshot {
   return {
-    transportSchemaVersion: '3',
+    transportSchemaVersion: '4',
     tabId,
     pageSessionId: null,
     connected: false,
@@ -86,13 +87,15 @@ async function loadBuildMetadata(): Promise<BuildMetadata> {
     const sourceTreeSha256 = value.sourceTreeSha256;
     const gitCommit = value.gitCommit;
     const gitWorkingTreeClean = value.gitWorkingTreeClean;
+    const gitProvenance = value.gitProvenance;
     if (typeof value.appVersion !== 'string' || typeof value.buildId !== 'string') throw new Error('build metadata identity missing');
     if (sourceTreeSha256 !== null && typeof sourceTreeSha256 !== 'string') throw new Error('invalid sourceTreeSha256');
     if (gitCommit !== null && typeof gitCommit !== 'string') throw new Error('invalid gitCommit');
     if (gitWorkingTreeClean !== null && typeof gitWorkingTreeClean !== 'boolean') throw new Error('invalid gitWorkingTreeClean');
-    return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, gitCommit, gitWorkingTreeClean };
+    if (gitProvenance !== 'GIT' && gitProvenance !== 'ENVIRONMENT' && gitProvenance !== 'UNAVAILABLE') throw new Error('invalid gitProvenance');
+    return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, gitCommit, gitWorkingTreeClean, gitProvenance };
   } catch {
-    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, gitCommit: null, gitWorkingTreeClean: null };
+    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, gitCommit: null, gitWorkingTreeClean: null, gitProvenance: 'UNAVAILABLE' };
   }
 }
 
@@ -135,7 +138,7 @@ async function appendTransportEvent(input: {
   reason: string | null;
 }): Promise<void> {
   const event: TransportEventRecord = {
-    transportEventSchemaVersion: '2',
+    transportEventSchemaVersion: '3',
     transportEventId: canonicalEntityHash('TRANSPORT_EVENT', 2, input),
     ...input,
   };
@@ -174,6 +177,15 @@ async function processSemanticBatch(payload: unknown, tabId: number | null): Pro
     if (!isRecord(item) || typeof item.pageSessionId !== 'string') continue;
     if (tabId !== null) captureState(tabId).pageSessionId = item.pageSessionId;
     if (isSemanticPriceEvent(item.event)) {
+      if (tabId !== null && item.event.connectionId.startsWith('shadow-main-')) {
+        const state = captureState(tabId);
+        state.shadowConnected = true;
+        state.shadowPrimary = true;
+        state.shadowState = 'STREAMING';
+        state.shadowLastMessageAt = item.event.receivedAtEpochMs;
+        state.shadowLastPriceAt = item.event.receivedAtEpochMs;
+        state.shadowLastErrorReason = null;
+      }
       const tick = createValidatedTick(item.event, item.pageSessionId);
       if (tick.integrity !== 'VALID') continue;
       await pipeline.enqueue({ tick });
@@ -215,32 +227,50 @@ function processConnectionEvent(payload: unknown, tabId: number | null): void {
   const capturedAt = typeof payload.capturedAt === 'number' ? payload.capturedAt : Date.now();
   const connection = payload.event;
   const connectionId = typeof connection.connectionId === 'string' ? connection.connectionId : null;
+  const role = connection.transportRole;
   const event = connection.event;
   const host = connection.feedHost === null || typeof connection.feedHost === 'string' ? connection.feedHost : null;
-  if (!connectionId || (event !== 'OPEN' && event !== 'CLOSE' && event !== 'ERROR')) return;
+  if (!connectionId || (role !== 'PAGE' && role !== 'SHADOW') || (event !== 'OPEN' && event !== 'CLOSE' && event !== 'ERROR')) return;
   const state = captureState(tabId);
   state.lastConnectionEventAt = capturedAt;
   state.connected = true;
   state.pageSessionId = pageSessionId ?? state.pageSessionId;
   latestCaptureTabId = tabId;
-  const eventType: TransportEventType = event === 'OPEN' ? 'PAGE_WS_OPEN' : event === 'CLOSE' ? 'PAGE_WS_CLOSE' : 'PAGE_WS_ERROR';
-  queueTransportEvent({
-    eventType,
-    occurredAt: capturedAt,
-    tabId,
-    pageSessionId,
-    connectionId,
-    endpointHost: host,
-    visibility: state.visibility,
-    shadow: false,
-    reason: null,
-  });
-  if (event !== 'OPEN') {
-    void runtime.then(({ pipeline }) => pipeline.connectionLost(connectionId, capturedAt, eventType)).catch(() => undefined);
-    if (!state.shadowCircuitOpen) sendShadowControl(tabId, 'FORCE_RECONNECT', capturedAt);
+
+  const eventType: TransportEventType = role === 'SHADOW'
+    ? event === 'OPEN' ? 'SHADOW_WS_OPEN' : event === 'CLOSE' ? 'SHADOW_WS_CLOSE' : 'SHADOW_WS_ERROR'
+    : event === 'OPEN' ? 'PAGE_WS_OPEN' : event === 'CLOSE' ? 'PAGE_WS_CLOSE' : 'PAGE_WS_ERROR';
+
+  if (role === 'PAGE') {
+    queueTransportEvent({
+      eventType,
+      occurredAt: capturedAt,
+      tabId,
+      pageSessionId,
+      connectionId,
+      endpointHost: host,
+      visibility: state.visibility,
+      shadow: false,
+      reason: null,
+    });
+  }
+
+  if (event === 'OPEN') return;
+
+  const shadowHealthy = state.shadowConnected
+    && state.shadowPrimary
+    && state.shadowState === 'STREAMING'
+    && state.shadowLastPriceAt !== null
+    && capturedAt - state.shadowLastPriceAt <= 15_000;
+
+  if (role === 'PAGE' && shadowHealthy) return;
+
+  void runtime.then(({ pipeline }) => pipeline.connectionLost(connectionId, capturedAt, eventType)).catch(() => undefined);
+
+  if (role === 'PAGE' && !state.shadowCircuitOpen) {
+    sendShadowControl(tabId, 'ENSURE_CONNECTED', capturedAt);
   }
 }
-
 
 function isShadowFeedState(value: unknown): value is ShadowFeedState {
   return value === 'WAITING_CONTEXT' || value === 'ENGINE_CONNECTING' || value === 'ENGINE_OPEN' || value === 'NAMESPACE_CONNECTING' || value === 'NAMESPACE_OPEN' || value === 'AUTH_SENT' || value === 'AUTHENTICATED' || value === 'SUBSCRIPTIONS_REPLAYED' || value === 'STREAMING' || value === 'BACKOFF' || value === 'CIRCUIT_OPEN' || value === 'ERROR';
@@ -288,11 +318,20 @@ function sendShadowControl(tabId: number, command: 'ENSURE_CONNECTED' | 'FORCE_R
 
 function superviseShadowConnections(nowMs: number, alarmDriven: boolean): void {
   for (const [tabId, state] of captureByTab) {
-    if (!state.connected || state.discarded === true || state.frozen === true) continue;
-    const semanticAge = state.lastSemanticEventAt === null ? Number.POSITIVE_INFINITY : nowMs - state.lastSemanticEventAt;
-    if (state.shadowCircuitOpen) continue;
-    if (semanticAge > 15_000) sendShadowControl(tabId, 'FORCE_RECONNECT', nowMs);
-    else if (alarmDriven || !state.shadowConnected) sendShadowControl(tabId, 'ENSURE_CONNECTED', nowMs);
+    if (!state.connected || state.discarded === true || state.frozen === true || state.shadowCircuitOpen) continue;
+    const shadowPriceAge = state.shadowLastPriceAt === null ? Number.POSITIVE_INFINITY : nowMs - state.shadowLastPriceAt;
+
+    if (state.shadowState === 'STREAMING' && state.shadowConnected && shadowPriceAge > 15_000) {
+      sendShadowControl(tabId, 'FORCE_RECONNECT', nowMs);
+      continue;
+    }
+
+    if (!state.shadowConnected && (state.shadowState === 'WAITING_CONTEXT' || state.shadowState === 'ERROR')) {
+      sendShadowControl(tabId, 'ENSURE_CONNECTED', nowMs);
+      continue;
+    }
+
+    if (alarmDriven && state.shadowState === 'WAITING_CONTEXT') sendShadowControl(tabId, 'ENSURE_CONNECTED', nowMs);
   }
 }
 

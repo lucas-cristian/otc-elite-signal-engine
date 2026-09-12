@@ -3,6 +3,7 @@ import type { MarketSourceIdentity, PayoutSnapshot, SourceQuality, Tick } from '
 
 export type RuntimeMode = 'PRODUCTION' | 'PROTOCOL_DISCOVERY';
 export type ConnectionEventType = 'OPEN' | 'CLOSE' | 'ERROR';
+export type ConnectionTransportRole = 'PAGE' | 'SHADOW';
 export type ShadowControlCommand = 'ENSURE_CONNECTED' | 'FORCE_RECONNECT' | 'RESET_CIRCUIT';
 
 export interface SemanticPriceEvent {
@@ -29,6 +30,7 @@ export interface SemanticPayoutEvent {
 export interface SemanticConnectionEvent {
   type: 'CONNECTION';
   connectionId: string;
+  transportRole: ConnectionTransportRole;
   event: ConnectionEventType;
   feedHost: string | null;
   receivedAtEpochMs: number;

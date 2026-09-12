@@ -34,10 +34,11 @@ export type TransportEventType =
   | 'SHADOW_FORCED_RECONNECT'
   | 'SHADOW_CIRCUIT_OPEN'
   | 'SHADOW_CIRCUIT_RESET'
-  | 'SHADOW_STALL_DETECTED';
+  | 'SHADOW_STALL_DETECTED'
+  | 'SHADOW_SHORT_RECONNECT';
 
 export interface TransportEventRecord {
-  transportEventSchemaVersion: '2';
+  transportEventSchemaVersion: '3';
   transportEventId: string;
   eventType: TransportEventType;
   occurredAt: number;
@@ -51,7 +52,7 @@ export interface TransportEventRecord {
 }
 
 export interface CaptureTransportSnapshot {
-  transportSchemaVersion: '3';
+  transportSchemaVersion: '4';
   tabId: number | null;
   pageSessionId: string | null;
   connected: boolean;

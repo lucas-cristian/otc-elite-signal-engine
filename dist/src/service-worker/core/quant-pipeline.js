@@ -10,7 +10,7 @@ import { RecoveryService } from '../storage/recovery-service.js';
 import { assessOperationalHealth, DEFAULT_DATA_HEALTH_THRESHOLDS, validateDataHealthThresholds, } from './data-health.js';
 import { MarketEpisodeArbitrator } from './market-episode-arbitrator.js';
 export const DEFAULT_PIPELINE_CONFIG = {
-    appVersion: '1.6.0',
+    appVersion: '1.8.0',
     executionMode: 'LIVE',
     timeframes: ['5s', '10s', '15s', '30s', '60s'],
     expirationSeconds: 60,
@@ -190,20 +190,36 @@ export class QuantPipeline {
         const existing = this.assets.get(key);
         if (!existing)
             return this.startEpoch(tick, 'INITIAL_FEED_EPOCH', false);
-        const gapMs = existing.latestTick === null ? 0 : tick.receivedAtEpochMs - existing.latestTick.receivedAtEpochMs;
-        const connectionChanged = existing.currentConnectionId !== tick.connectionId || existing.currentPageSessionId !== tick.pageSessionId;
-        if (!existing.continuityBroken && !connectionChanged && gapMs <= this.config.continuityGapAfterMs)
+        const gapMs = existing.latestTick === null ? 0 : Math.max(0, tick.receivedAtEpochMs - existing.latestTick.receivedAtEpochMs);
+        const connectionChanged = existing.currentConnectionId !== tick.connectionId;
+        const pageSessionChanged = existing.currentPageSessionId !== tick.pageSessionId;
+        const withinGrace = gapMs <= this.config.continuityGapAfterMs;
+        if (!existing.continuityBroken && !pageSessionChanged && withinGrace) {
+            if (connectionChanged || existing.pendingConnectionLossAt !== null) {
+                for (const builder of existing.builders.values())
+                    builder.markTransportGap();
+                const reason = connectionChanged ? 'SHORT_TRANSPORT_RECONNECT' : 'CONNECTION_RESUMED';
+                await this.appendContinuity(existing, 'SHORT_RECONNECT_GAP', tick.receivedAtEpochMs, reason, gapMs, tick.connectionId);
+                existing.currentConnectionId = tick.connectionId;
+                existing.currentPageSessionId = tick.pageSessionId;
+                existing.pendingConnectionLossAt = null;
+                existing.pendingConnectionLossReason = null;
+                existing.pendingConnectionId = null;
+            }
             return existing;
+        }
         const eventType = existing.continuityBroken
             ? 'CONNECTION_LOST'
-            : connectionChanged
+            : pageSessionChanged || connectionChanged
                 ? 'SOURCE_SWITCH'
                 : 'GAP_DETECTED';
         const reason = existing.continuityBroken
-            ? 'RECOVERY_AFTER_CONNECTION_LOSS'
-            : connectionChanged
-                ? 'MARKET_TRANSPORT_SOURCE_CHANGED'
-                : `TICK_GAP_${gapMs}MS`;
+            ? 'RECOVERY_AFTER_CONFIRMED_CONNECTION_LOSS'
+            : pageSessionChanged
+                ? 'PAGE_SESSION_CHANGED'
+                : connectionChanged
+                    ? `TRANSPORT_SWITCH_AFTER_${gapMs}MS`
+                    : `TICK_GAP_${gapMs}MS`;
         await this.endEpoch(existing, tick.receivedAtEpochMs, eventType, reason, gapMs > 0 ? gapMs : null, tick.connectionId);
         await this.invalidatePendingForAssetFeed(canonicalAssetId, feedId, tick.receivedAtEpochMs);
         this.episodeArbitrator.invalidateAssetFeed(canonicalAssetId, feedId);
@@ -252,6 +268,9 @@ export class QuantPipeline {
             latestTick: null,
             startedAt: input.startedAt,
             continuityBroken: false,
+            pendingConnectionLossAt: null,
+            pendingConnectionLossReason: null,
+            pendingConnectionId: null,
         };
     }
     restoreAssetRuntime(tick, feedEpochId) {
@@ -272,12 +291,25 @@ export class QuantPipeline {
         for (const runtime of this.assets.values()) {
             if (runtime.currentConnectionId !== connectionId || runtime.continuityBroken)
                 continue;
-            runtime.continuityBroken = true;
+            if (runtime.pendingConnectionLossAt !== null)
+                continue;
+            runtime.pendingConnectionLossAt = occurredAt;
+            runtime.pendingConnectionLossReason = reason;
+            runtime.pendingConnectionId = connectionId;
             await this.appendContinuity(runtime, 'CONNECTION_LOST', occurredAt, reason, null, null);
-            await this.appendContinuity(runtime, 'EPOCH_ENDED', occurredAt, reason, null, null);
-            await this.invalidatePendingForAssetFeed(runtime.canonicalAssetId, runtime.feedId, occurredAt);
-            this.episodeArbitrator.invalidateAssetFeed(runtime.canonicalAssetId, runtime.feedId);
         }
+    }
+    async confirmExpiredConnectionLoss(runtime, nowMs) {
+        if (runtime.continuityBroken || runtime.pendingConnectionLossAt === null)
+            return;
+        const latestAt = runtime.latestTick?.receivedAtEpochMs ?? runtime.pendingConnectionLossAt;
+        if (nowMs - latestAt <= this.config.continuityGapAfterMs)
+            return;
+        runtime.continuityBroken = true;
+        const reason = runtime.pendingConnectionLossReason ?? 'CONNECTION_LOST';
+        await this.appendContinuity(runtime, 'EPOCH_ENDED', nowMs, `${reason}:GRACE_EXCEEDED_${this.config.continuityGapAfterMs}MS`, Math.max(0, nowMs - latestAt), null);
+        await this.invalidatePendingForAssetFeed(runtime.canonicalAssetId, runtime.feedId, nowMs);
+        this.episodeArbitrator.invalidateAssetFeed(runtime.canonicalAssetId, runtime.feedId);
     }
     async endEpoch(runtime, occurredAt, eventType, reason, gapMs, nextConnectionId) {
         if (eventType !== 'CONNECTION_LOST') {
@@ -288,8 +320,8 @@ export class QuantPipeline {
     }
     async appendContinuity(runtime, eventType, occurredAt, reason, gapMs, nextConnectionId) {
         const event = {
-            feedContinuityEventSchemaVersion: '1',
-            continuityEventId: canonicalEntityHash('FEED_CONTINUITY_EVENT', 1, {
+            feedContinuityEventSchemaVersion: '2',
+            continuityEventId: canonicalEntityHash('FEED_CONTINUITY_EVENT', 2, {
                 canonicalAssetId: runtime.canonicalAssetId,
                 feedId: runtime.feedId,
                 feedEpochId: runtime.feedEpochId,
@@ -334,6 +366,7 @@ export class QuantPipeline {
     async processWatchdog(nowMs) {
         this.currentNow = Math.max(this.currentNow, nowMs);
         for (const asset of this.assets.values()) {
+            await this.confirmExpiredConnectionLoss(asset, nowMs);
             if (asset.continuityBroken)
                 continue;
             for (const builder of asset.builders.values())
@@ -382,7 +415,7 @@ export class QuantPipeline {
         const cleanClosed = history.filter((item) => item.close !== null && item.quality === 'CLEAN');
         const coreReady = cleanClosed.length >= 5;
         const features = coreReady ? this.featureEngine.compute({
-            candles: history,
+            candles: cleanClosed,
             ticks: asset.ticks,
             cutoffTimestamp: candle.endTimestamp,
             computedAt: this.currentNow,

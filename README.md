@@ -8,14 +8,21 @@ The extension never clicks CALL/PUT, never sends `openOrder`, never executes a t
 
 Authentication/session packets used by the recovery socket are ephemeral runtime context. They are not written to IndexedDB, extension storage, logs, datasets, build artifacts, or source control.
 
-## Release 1.7.0
+## Release 1.8.0
 
-Release 1.7.0 adds two protections that are required for unattended data collection:
+Release 1.8.0 keeps the MAIN-world native shadow feed from v1.7, but changes how short transport reconnects are interpreted scientifically.
 
-1. **MAIN-world native shadow market WebSocket** — an independent market-only socket is created in the Pocket Option page context with the native WebSocket constructor, while the Service Worker only supervises health/reconnect commands;
-2. **feed continuity epochs** — any disconnect, connection switch, page-session switch, or tick gap above the frozen continuity threshold ends the old quantitative epoch. Candles, features, regimes, pending entry/result work, and active market episodes cannot cross that boundary.
+Observed Pocket Option behavior closes and recreates the shadow Socket.IO connection periodically even while the tab is hidden. Those reconnects usually create only a ~4–6 second observation gap. The frozen continuity threshold is 15 seconds, so v1.8 treats a reconnect below that threshold as a **short reconnect gap**, not a complete quantitative epoch loss.
 
-Chrome 116+ is required because resilient WebSockets in extension Service Workers depend on the Chrome 116 lifecycle behavior.
+The release therefore adds:
+
+1. graceful short reconnect continuity under the frozen 15-second threshold;
+2. delayed feed-loss confirmation instead of invalidating results at the first socket close;
+3. boundary-candle `GAP_AFFECTED` marking without resetting all quantitative history;
+4. a single reconnect authority in MAIN World, while the Service Worker supervises only genuinely stalled streams;
+5. continuously refreshed shadow last-message/last-price telemetry from semantic market events;
+6. hard epoch reset only for a gap above 15 seconds, page-session change, confirmed prolonged loss, or incompatible source transition.
+
 
 ## Verified protocol
 
@@ -114,7 +121,7 @@ The shadow connection implements Engine.IO ping/pong handling and automatic reco
 
 A market stream with no price for 15 seconds is treated as stalled and reconnected. The regular 30-second extension alarm provides an additional watchdog wake-up path.
 
-The page feed remains a fallback. Once the shadow feed is authenticated, streaming and fresh, duplicate page events for the same feed are ignored. If the shadow feed becomes unavailable, page events can take over, but that transport switch creates a new feed continuity epoch.
+The page feed remains a fallback. Once the shadow feed is authenticated, streaming and fresh, duplicate page events for the same feed are ignored. If the active transport changes but observations resume within 15 seconds in the same page session and verified feed identity, the same `feedEpochId` is preserved and the boundary candles are marked `GAP_AFFECTED`. A new epoch is created only when the frozen continuity boundary is truly crossed.
 
 ## Feed continuity epochs
 
@@ -124,29 +131,32 @@ A quantitative epoch is scoped by:
 canonicalAssetId
 feedId
 feedEpochId
-connectionId
 pageSessionId
 ```
 
-A new epoch is mandatory when any of these continuity conditions occurs:
+Connection IDs are transport instances inside an epoch. They are no longer scientific epoch boundaries by themselves.
 
-- explicit WebSocket `CLOSE` or `ERROR`;
-- shadow socket stall;
-- connection ID changes;
-- page session changes;
-- tick gap > 15,000 ms.
+For a disconnect/reconnect in the same page session and verified feed:
 
-On an epoch boundary the runtime:
+```text
+gap <= 15,000 ms
+→ preserve feedEpochId
+→ append CONNECTION_LOST + SHORT_RECONNECT_GAP evidence
+→ mark the candle(s) touching the transport gap as GAP_AFFECTED
+→ keep pending results/episodes when still causally resolvable
+→ do not perform full warmup reset
+```
 
-- writes continuity evidence to the append-only journal;
-- invalidates pending entries/results fail-closed;
-- closes the active market episode;
-- resets hot tick/candle/feature/regime state;
-- starts a new deterministic `feedEpochId`;
-- marks the first recovered candle `GAP_AFFECTED`;
-- requires at least five fresh `CLEAN` closed candles before quantitative decisions can leave warmup.
+A hard epoch boundary remains mandatory when:
 
-Therefore pre-gap history cannot be used to create a post-reconnection signal.
+- the observation gap exceeds 15,000 ms;
+- the page session changes;
+- a connection loss remains unrecovered beyond the continuity grace threshold;
+- the feed/source transition is incompatible with the frozen source identity.
+
+On a hard boundary the runtime writes continuity evidence, invalidates pending work fail-closed, closes active market episodes, resets hot quantitative state, starts a new deterministic `feedEpochId`, marks recovery as gap-affected, and requires fresh warmup.
+
+Feature extraction uses only `CLEAN` closed candles. A `GAP_AFFECTED` boundary candle is journaled for audit but is not silently treated as clean quantitative evidence.
 
 ## Data-health watchdog
 
@@ -197,7 +207,7 @@ economicReturn = null
 
 ## Scientific dataset
 
-Dataset schema v5 includes:
+Dataset schema v7 includes:
 
 - ticks and payout snapshots;
 - candles;
@@ -215,21 +225,21 @@ The dataset never contains the shadow authentication packet or account session s
 ## Schema versions
 
 ```text
-Application              1.7.0
+Application              1.8.0
 Tick                     v4
 Candle                   v4
 Decision                 v5
 Signal                   v4
 PayoutSnapshot           v3
 Result                   v3
-FeedContinuityEvent      v1
-CaptureTransportSnapshot v2
-TransportEvent           v1
-Dataset                  v5
-IndexedDB                v7
+FeedContinuityEvent      v2
+CaptureTransportSnapshot v4
+TransportEvent           v3
+Dataset                  v7
+IndexedDB                v9
 ```
 
-The IndexedDB version bump intentionally clears incompatible pre-1.6 runtime records once after upgrade.
+The IndexedDB version bump intentionally clears incompatible pre-1.8 runtime records once after upgrade.
 
 ## Build and validation
 
@@ -250,17 +260,19 @@ npm run verify
 
 Load `dist/` as an unpacked extension through `chrome://extensions`.
 
-## Runtime validation for v1.6
+## Runtime validation for v1.8
 
-The shadow transport state machine is validated by tests and was built from the captured Pocket Option Engine.IO/Socket.IO protocol. A live authenticated shadow connection still must be verified inside Chrome against the user's Pocket Option DEMO session because the sandbox cannot authenticate to the broker.
-
-Expected dashboard state after successful DEMO validation:
+The expected hidden-tab state is:
 
 ```text
 Shadow market socket: true
+Shadow primary feed: true
 Shadow state: STREAMING
-Shadow endpoint: demo-api-eu.po.market
+Shadow circuit open: false
+Latest tick age: low
 Current operational state: HEALTHY
 ```
 
-With the broker tab hidden, ticks should continue increasing even if the broker page's own chart stops updating. If the shadow socket falls, transport events and continuity events must record the outage and reconnect instead of silently joining pre-gap and post-gap observations.
+Periodic server-driven shadow reconnects are acceptable when they recover within 15 seconds. They should produce `SHORT_RECONNECT_GAP` continuity evidence while preserving the same feed epoch. The dashboard must not show repeated full warmup resets solely because the Socket.IO transport instance changed.
+
+A reconnect that does not recover within 15 seconds is a hard scientific continuity break and must start a new epoch before new CALL/PUT signals are eligible.

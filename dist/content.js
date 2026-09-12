@@ -13,7 +13,12 @@ let otcPortReconnectQueued = false;
 function otcIsRecord(value) { return typeof value === 'object' && value !== null; }
 function otcHasSemanticEnvelope(value) { return typeof value.connectionId === 'string' && Number.isInteger(value.sequence) && value.sequence >= 0; }
 function otcIsConnectionEvent(value) {
-    return otcIsRecord(value) && value.type === 'CONNECTION' && typeof value.connectionId === 'string' && (value.feedHost === null || typeof value.feedHost === 'string') && (value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR');
+    return otcIsRecord(value)
+        && value.type === 'CONNECTION'
+        && typeof value.connectionId === 'string'
+        && (value.transportRole === 'PAGE' || value.transportRole === 'SHADOW')
+        && (value.feedHost === null || typeof value.feedHost === 'string')
+        && (value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR');
 }
 function otcIsSemanticPriceEvent(value) {
     if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PRICE' || !otcHasSemanticEnvelope(value))

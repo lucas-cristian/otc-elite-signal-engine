@@ -13,7 +13,12 @@ let otcPortReconnectQueued = false;
 function otcIsRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function otcHasSemanticEnvelope(value: Record<string, unknown>): boolean { return typeof value.connectionId === 'string' && Number.isInteger(value.sequence) && (value.sequence as number) >= 0; }
 function otcIsConnectionEvent(value: unknown): value is Record<string, unknown> {
-  return otcIsRecord(value) && value.type === 'CONNECTION' && typeof value.connectionId === 'string' && (value.feedHost === null || typeof value.feedHost === 'string') && (value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR');
+  return otcIsRecord(value)
+    && value.type === 'CONNECTION'
+    && typeof value.connectionId === 'string'
+    && (value.transportRole === 'PAGE' || value.transportRole === 'SHADOW')
+    && (value.feedHost === null || typeof value.feedHost === 'string')
+    && (value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR');
 }
 function otcIsSemanticPriceEvent(value: unknown): value is Record<string, unknown> {
   if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PRICE' || !otcHasSemanticEnvelope(value)) return false;

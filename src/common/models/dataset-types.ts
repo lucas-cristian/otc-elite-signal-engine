@@ -14,7 +14,7 @@ export interface DatasetAssetFeedHealth {
 }
 
 export interface DatasetManifest {
-  datasetSchemaVersion: '6';
+  datasetSchemaVersion: '7';
   datasetId: string;
   createdAt: number;
   appVersion: string;
@@ -22,6 +22,7 @@ export interface DatasetManifest {
   sourceTreeSha256: string | null;
   gitCommit: string | null;
   gitWorkingTreeClean: boolean | null;
+  gitProvenance: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
   protocolRegistryVersion: string;
   protocolVerificationIds: string[];
   exportOperationalDataState: OperationalDataState;

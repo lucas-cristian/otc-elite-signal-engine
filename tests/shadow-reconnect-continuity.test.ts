@@ -116,12 +116,12 @@ test('a long tick gap starts a new feed epoch and forces fresh warmup', async ()
   assert.equal(earlyDecisions.some((decision) => decision.blockers.includes('CORE_WARMUP')), true);
 });
 
-test('explicit connection loss invalidates pending result immediately instead of crossing transport epochs', async () => {
+test('short reconnect gap preserves feed epoch and pending result', async () => {
   const journal = new MemoryJournal();
   await journal.appendTick(tick(1_000, 1));
   await journal.appendSignal(pendingSignal());
   await journal.appendContinuityEvent({
-    feedContinuityEventSchemaVersion: '1',
+    feedContinuityEventSchemaVersion: '2',
     continuityEventId: 'epoch-start',
     canonicalAssetId: 'EURUSDOTC',
     feedId: 'demo-api-eu.po.market',
@@ -136,13 +136,91 @@ test('explicit connection loss invalidates pending result immediately instead of
   });
   const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
   await pipeline.initialize(1_100);
-  await pipeline.connectionLost('ws-a', 2_000, 'PAGE_WS_CLOSE');
+  await pipeline.connectionLost('ws-a', 2_000, 'SHADOW_WS_CLOSE');
   await pipeline.drain();
+
+  let snapshot = await journal.snapshot();
+  assert.equal(snapshot.results.some((item) => item.signalId === 'continuity-signal'), false);
+  assert.equal(snapshot.continuityEvents.some((event) => event.eventType === 'EPOCH_ENDED'), false);
+
+  await pipeline.enqueue({ tick: tick(6_000, 2, 'ws-b', 'page-a') });
+  await pipeline.drain();
+  snapshot = await journal.snapshot();
+
+  const epochs = snapshot.continuityEvents.filter((event) => event.eventType === 'EPOCH_STARTED');
+  assert.equal(epochs.length, 1);
+  const shortGap = snapshot.continuityEvents.find((event) => event.eventType === 'SHORT_RECONNECT_GAP');
+  assert.ok(shortGap);
+  assert.equal(shortGap.feedEpochId, 'epoch-existing');
+  assert.equal(shortGap.previousConnectionId, 'ws-a');
+  assert.equal(shortGap.connectionId, 'ws-b');
+  assert.equal(shortGap.gapMs, 5_000);
+  assert.equal(snapshot.results.some((item) => item.signalId === 'continuity-signal'), false);
+  assert.notEqual(pipeline.getAssetFeedOperationalHealth('EURUSDOTC', 'demo-api-eu.po.market', 6_001).state, 'DATA_UNAVAILABLE');
+});
+
+
+test('short transport switch marks only boundary candles gap-affected without creating a new epoch', async () => {
+  const journal = new MemoryJournal();
+  const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
+  await pipeline.initialize(0);
+
+  for (let index = 0; index < 36; index++) {
+    await pipeline.enqueue({ tick: tick(1_000 + index * 1_000, index, 'shadow-main-1') });
+  }
+  await pipeline.connectionLost('shadow-main-1', 36_500, 'SHADOW_WS_CLOSE');
+  await pipeline.enqueue({ tick: tick(41_000, 100, 'shadow-main-2') });
+  for (let index = 1; index <= 12; index++) {
+    await pipeline.enqueue({ tick: tick(41_000 + index * 1_000, 100 + index, 'shadow-main-2') });
+  }
+  await pipeline.drain();
+
+  const snapshot = await journal.snapshot();
+  assert.equal(snapshot.continuityEvents.filter((event) => event.eventType === 'EPOCH_STARTED').length, 1);
+  const shortGap = snapshot.continuityEvents.find((event) => event.eventType === 'SHORT_RECONNECT_GAP');
+  assert.ok(shortGap);
+  assert.equal(shortGap.gapMs, 5_000);
+  assert.equal(shortGap.previousConnectionId, 'shadow-main-1');
+  assert.equal(shortGap.connectionId, 'shadow-main-2');
+
+  const affected = snapshot.candles.filter((candle) => candle.quality === 'GAP_AFFECTED');
+  assert.ok(affected.length > 0);
+  const cleanAfterRecovery = snapshot.candles.filter(
+    (candle) => candle.timeframe === '5s' && candle.lifecycle === 'CLOSED' && candle.startTimestamp >= 45_000 && candle.quality === 'CLEAN',
+  );
+  assert.ok(cleanAfterRecovery.length > 0);
+});
+
+test('connection loss exceeding grace ends the feed epoch and invalidates pending result', async () => {
+  const journal = new MemoryJournal();
+  await journal.appendTick(tick(1_000, 1));
+  await journal.appendSignal(pendingSignal());
+  await journal.appendContinuityEvent({
+    feedContinuityEventSchemaVersion: '2',
+    continuityEventId: 'epoch-start-long-loss',
+    canonicalAssetId: 'EURUSDOTC',
+    feedId: 'demo-api-eu.po.market',
+    feedEpochId: 'epoch-existing',
+    eventType: 'EPOCH_STARTED',
+    occurredAt: 1_000,
+    connectionId: 'ws-a',
+    previousConnectionId: 'ws-a',
+    pageSessionId: 'page-a',
+    gapMs: null,
+    reason: 'TEST',
+  });
+  const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
+  await pipeline.initialize(1_100);
+  await pipeline.connectionLost('ws-a', 2_000, 'SHADOW_WS_CLOSE');
+  await pipeline.watchdog(16_100);
+  await pipeline.drain();
+
   const snapshot = await journal.snapshot();
   const result = snapshot.results.find((item) => item.signalId === 'continuity-signal');
   assert.ok(result && result.resolutionStatus === 'UNRESOLVED');
   assert.equal(result.unresolvedReason, 'ASSET_FEED_LOST');
-  assert.equal(pipeline.getAssetFeedOperationalHealth('EURUSDOTC', 'demo-api-eu.po.market', 2_001).state, 'DATA_UNAVAILABLE');
+  assert.equal(snapshot.continuityEvents.some((event) => event.eventType === 'EPOCH_ENDED'), true);
+  assert.equal(pipeline.getAssetFeedOperationalHealth('EURUSDOTC', 'demo-api-eu.po.market', 16_101).state, 'DATA_UNAVAILABLE');
 });
 
 test('captured-style source switch after a multi-minute outage records the gap and blocks immediate signals', async () => {

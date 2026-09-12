@@ -20,7 +20,7 @@ function decision(): DecisionRecord {
     decisionComputedAt: 1000, decisionPublishedAt: 1000, alertPublishedAt: 1000, evaluationWindowId: 'e1', candleStartTimestamp: 0,
     candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.8, calibratedProbability: null, structureRegime: 'TREND_UP', volatilityRegime: 'NORMAL',
     strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceFeedId: 'demo-api-eu.po.market', sourceProtocolVerificationId: 'TEST_VERIFIED_STREAM', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
-    expirationSeconds: 60, configHash: 'cfg', configSnapshot: {}, appVersion: '1.5.0', marketEpisodeId: 'episode-d1', arbitrationStatus: 'PRIMARY', createdAt: 1000,
+    expirationSeconds: 60, configHash: 'cfg', configSnapshot: {}, appVersion: '1.8.0', marketEpisodeId: 'episode-d1', arbitrationStatus: 'PRIMARY', createdAt: 1000,
   };
 }
 
@@ -130,7 +130,7 @@ test('replay interleaves payout events and ticks through the same quantitative p
   const exporter = new DatasetExporter(journal);
   const createdAt = start + 200_000;
   await pipeline.finalizeThrough(createdAt);
-  const dataset = await exporter.create({ appVersion: '1.5.0', buildId: 'test', sourceTreeSha256: 'source-hash', gitCommit: null, gitWorkingTreeClean: null, createdAt, operationalHealth: pipeline.getOperationalHealth(createdAt), assetFeedHealth: pipeline.getAllAssetFeedOperationalHealth(createdAt), captureTransport: { transportSchemaVersion: '3', tabId: null, pageSessionId: null, connected: false, visibility: 'unknown', frozen: null, discarded: null, autoDiscardable: null, lastSemanticEventAt: null, lastLifecycleEventAt: null, lastConnectionEventAt: null, lastLifecycleReason: null, shadowConnected: false, shadowPrimary: false, shadowState: 'WAITING_CONTEXT', shadowEndpointHost: null, shadowReconnectAttempts: 0, shadowConsecutiveNamespaceRejects: 0, shadowCircuitOpen: false, shadowLastMessageAt: null, shadowLastPriceAt: null, shadowLastErrorReason: null, shadowLastCommandAt: null, mitigation: 'MAIN_WORLD_NATIVE_SHADOW_RUNTIME_PORT_WATCHDOG_AUTO_DISCARD_DISABLED' } });
+  const dataset = await exporter.create({ appVersion: '1.8.0', buildId: 'test', sourceTreeSha256: 'source-hash', gitCommit: null, gitWorkingTreeClean: null, gitProvenance: 'UNAVAILABLE', createdAt, operationalHealth: pipeline.getOperationalHealth(createdAt), assetFeedHealth: pipeline.getAllAssetFeedOperationalHealth(createdAt), captureTransport: { transportSchemaVersion: '4', tabId: null, pageSessionId: null, connected: false, visibility: 'unknown', frozen: null, discarded: null, autoDiscardable: null, lastSemanticEventAt: null, lastLifecycleEventAt: null, lastConnectionEventAt: null, lastLifecycleReason: null, shadowConnected: false, shadowPrimary: false, shadowState: 'WAITING_CONTEXT', shadowEndpointHost: null, shadowReconnectAttempts: 0, shadowConsecutiveNamespaceRejects: 0, shadowCircuitOpen: false, shadowLastMessageAt: null, shadowLastPriceAt: null, shadowLastErrorReason: null, shadowLastCommandAt: null, mitigation: 'MAIN_WORLD_NATIVE_SHADOW_RUNTIME_PORT_WATCHDOG_AUTO_DISCARD_DISABLED' } });
   assert.ok(dataset.decisions.length > 0);
   assert.equal(dataset.payoutSnapshots.length, 1);
   const replay = await new ReplayEngine().replay(dataset, config);
