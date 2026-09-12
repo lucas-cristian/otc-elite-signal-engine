@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "OTC Elite Signal Engine",
+  "version": "1.0.0",
+  "description": "Laboratório quantitativo OTC",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "*://*.pocketoption.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.pocketoption.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["pageBridge.js"],
+      "matches": ["*://*.pocketoption.com/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "options_ui": {
+    "page": "dashboard.html",
+    "open_in_tab": true
+  }
+}
