@@ -10,7 +10,7 @@ import { RecoveryService } from '../storage/recovery-service.js';
 import { assessOperationalHealth, DEFAULT_DATA_HEALTH_THRESHOLDS, validateDataHealthThresholds, } from './data-health.js';
 import { MarketEpisodeArbitrator } from './market-episode-arbitrator.js';
 export const DEFAULT_PIPELINE_CONFIG = {
-    appVersion: '1.8.0',
+    appVersion: '1.8.1',
     executionMode: 'LIVE',
     timeframes: ['5s', '10s', '15s', '30s', '60s'],
     expirationSeconds: 60,
@@ -23,6 +23,8 @@ export const DEFAULT_PIPELINE_CONFIG = {
     arbitrationConflictScoreMargin: 0.10,
     episodeHorizonMs: 68_000,
     continuityGapAfterMs: 15_000,
+    semanticTickDedupWindowMs: 2_000,
+    primaryTransportHandoffMaxMs: 250,
 };
 export class QuantPipeline {
     journal;
@@ -38,6 +40,7 @@ export class QuantPipeline {
     pendingSignals = new Map();
     payoutByAssetAndFeed = new Map();
     emittedCandles = [];
+    recentSemanticTicks = new Map();
     processing = Promise.resolve();
     currentNow = 0;
     startedAt = 0;
@@ -64,6 +67,8 @@ export class QuantPipeline {
             arbitrationConflictScoreMargin: config.arbitrationConflictScoreMargin,
             episodeHorizonMs: config.episodeHorizonMs,
             continuityGapAfterMs: config.continuityGapAfterMs,
+            semanticTickDedupWindowMs: config.semanticTickDedupWindowMs,
+            primaryTransportHandoffMaxMs: config.primaryTransportHandoffMaxMs,
             protocolRegistryVersion: PROTOCOL_VERIFICATION_REGISTRY_VERSION,
         };
         this.decisionEngine = new DecisionEngine({
@@ -170,8 +175,12 @@ export class QuantPipeline {
         const tick = observation.tick;
         this.currentNow = Math.max(this.currentNow, tick.receivedAtEpochMs);
         await this.expirePending(tick.receivedAtEpochMs);
-        this.latestTick = this.latestTick === null || tick.receivedAtEpochMs >= this.latestTick.receivedAtEpochMs ? tick : this.latestTick;
+        const semanticDuplicate = this.isSemanticTransportDuplicate(tick);
         const asset = await this.prepareRuntimeForTick(tick);
+        if (semanticDuplicate)
+            return;
+        this.rememberSemanticTick(tick);
+        this.latestTick = this.latestTick === null || tick.receivedAtEpochMs >= this.latestTick.receivedAtEpochMs ? tick : this.latestTick;
         asset.latestTick = tick;
         await this.journal.appendTick(tick);
         await this.resolveExistingEntries(tick, asset);
@@ -195,6 +204,16 @@ export class QuantPipeline {
         const pageSessionChanged = existing.currentPageSessionId !== tick.pageSessionId;
         const withinGrace = gapMs <= this.config.continuityGapAfterMs;
         if (!existing.continuityBroken && !pageSessionChanged && withinGrace) {
+            const primaryHandoff = connectionChanged
+                && existing.pendingConnectionLossAt === null
+                && gapMs <= this.config.primaryTransportHandoffMaxMs
+                && this.isPageShadowTransition(existing.currentConnectionId, tick.connectionId);
+            if (primaryHandoff) {
+                await this.appendContinuity(existing, 'PRIMARY_TRANSPORT_HANDOFF', tick.receivedAtEpochMs, 'PRIMARY_TRANSPORT_HANDOFF', gapMs, tick.connectionId);
+                existing.currentConnectionId = tick.connectionId;
+                existing.currentPageSessionId = tick.pageSessionId;
+                return existing;
+            }
             if (connectionChanged || existing.pendingConnectionLossAt !== null) {
                 for (const builder of existing.builders.values())
                     builder.markTransportGap();
@@ -320,8 +339,8 @@ export class QuantPipeline {
     }
     async appendContinuity(runtime, eventType, occurredAt, reason, gapMs, nextConnectionId) {
         const event = {
-            feedContinuityEventSchemaVersion: '2',
-            continuityEventId: canonicalEntityHash('FEED_CONTINUITY_EVENT', 2, {
+            feedContinuityEventSchemaVersion: '3',
+            continuityEventId: canonicalEntityHash('FEED_CONTINUITY_EVENT', 3, {
                 canonicalAssetId: runtime.canonicalAssetId,
                 feedId: runtime.feedId,
                 feedEpochId: runtime.feedEpochId,
@@ -357,6 +376,35 @@ export class QuantPipeline {
             this.pendingSignals.delete(signalId);
             await this.journal.appendResult(this.resultEngine.invalidate(signal, nowMs, 'ASSET_FEED_LOST'));
         }
+    }
+    isSemanticTransportDuplicate(tick) {
+        if (tick.sourceTimestampEpochMs === null)
+            return false;
+        const key = this.semanticTickKey(tick);
+        const previous = this.recentSemanticTicks.get(key);
+        return previous !== undefined
+            && previous.connectionId !== tick.connectionId
+            && Math.abs(tick.receivedAtEpochMs - previous.receivedAtEpochMs) <= this.config.semanticTickDedupWindowMs;
+    }
+    rememberSemanticTick(tick) {
+        if (tick.sourceTimestampEpochMs === null)
+            return;
+        this.recentSemanticTicks.set(this.semanticTickKey(tick), { connectionId: tick.connectionId, receivedAtEpochMs: tick.receivedAtEpochMs });
+        if (this.recentSemanticTicks.size <= 4_096)
+            return;
+        const cutoff = tick.receivedAtEpochMs - this.config.semanticTickDedupWindowMs * 2;
+        for (const [key, value] of this.recentSemanticTicks) {
+            if (value.receivedAtEpochMs < cutoff)
+                this.recentSemanticTicks.delete(key);
+        }
+    }
+    semanticTickKey(tick) {
+        return `${tick.marketSourceIdentity.feedId}|${tick.marketSourceIdentity.instrumentId ?? 'UNKNOWN'}|${tick.sourceTimestampEpochMs ?? 'LOCAL'}|${tick.price}`;
+    }
+    isPageShadowTransition(previousConnectionId, nextConnectionId) {
+        const previousShadow = previousConnectionId.startsWith('shadow-main-');
+        const nextShadow = nextConnectionId.startsWith('shadow-main-');
+        return previousShadow !== nextShadow;
     }
     async processPayout(payoutSnapshot) {
         this.currentNow = Math.max(this.currentNow, payoutSnapshot.capturedAt);

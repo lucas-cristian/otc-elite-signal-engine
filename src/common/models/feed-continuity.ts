@@ -4,10 +4,11 @@ export type FeedContinuityEventType =
   | 'GAP_DETECTED'
   | 'CONNECTION_LOST'
   | 'SOURCE_SWITCH'
-  | 'SHORT_RECONNECT_GAP';
+  | 'SHORT_RECONNECT_GAP'
+  | 'PRIMARY_TRANSPORT_HANDOFF';
 
 export interface FeedContinuityEvent {
-  feedContinuityEventSchemaVersion: '2';
+  feedContinuityEventSchemaVersion: '3';
   continuityEventId: string;
   canonicalAssetId: string;
   feedId: string;

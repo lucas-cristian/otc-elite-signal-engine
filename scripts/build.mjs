@@ -31,20 +31,33 @@ function sourceTreeHash() {
   return hash.digest('hex');
 }
 
+function gitCandidates() {
+  return [...new Set([
+    process.env.INIT_CWD,
+    process.env.PWD,
+    process.cwd(),
+  ].filter((value) => typeof value === 'string' && value.length > 0).map((value) => path.resolve(value)))];
+}
+
+function gitStateFrom(directory) {
+  const gitRoot = execFileSync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const gitCommit = execFileSync('git', ['-C', gitRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const status = execFileSync('git', ['-C', gitRoot, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  return { gitCommit, gitWorkingTreeClean: status.length === 0, gitProvenance: 'GIT' };
+}
+
 function gitState() {
-  const environmentCommit = process.env.OTC_GIT_COMMIT || process.env.GITHUB_SHA || null;
-  try {
-    const gitRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const gitCommit = execFileSync('git', ['-C', gitRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    const status = execFileSync('git', ['-C', gitRoot, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return { gitCommit, gitWorkingTreeClean: status.length === 0, gitProvenance: 'GIT' };
-  } catch {
-    return {
-      gitCommit: environmentCommit,
-      gitWorkingTreeClean: null,
-      gitProvenance: environmentCommit === null ? 'UNAVAILABLE' : 'ENVIRONMENT',
-    };
+  for (const directory of gitCandidates()) {
+    try {
+      return gitStateFrom(directory);
+    } catch {}
   }
+  const environmentCommit = process.env.OTC_GIT_COMMIT || process.env.GITHUB_SHA || null;
+  return {
+    gitCommit: environmentCommit,
+    gitWorkingTreeClean: null,
+    gitProvenance: environmentCommit === null ? 'UNAVAILABLE' : 'ENVIRONMENT',
+  };
 }
 
 const sourceTreeSha256 = sourceTreeHash();

@@ -121,7 +121,7 @@ test('short reconnect gap preserves feed epoch and pending result', async () => 
   await journal.appendTick(tick(1_000, 1));
   await journal.appendSignal(pendingSignal());
   await journal.appendContinuityEvent({
-    feedContinuityEventSchemaVersion: '2',
+    feedContinuityEventSchemaVersion: '3',
     continuityEventId: 'epoch-start',
     canonicalAssetId: 'EURUSDOTC',
     feedId: 'demo-api-eu.po.market',
@@ -196,7 +196,7 @@ test('connection loss exceeding grace ends the feed epoch and invalidates pendin
   await journal.appendTick(tick(1_000, 1));
   await journal.appendSignal(pendingSignal());
   await journal.appendContinuityEvent({
-    feedContinuityEventSchemaVersion: '2',
+    feedContinuityEventSchemaVersion: '3',
     continuityEventId: 'epoch-start-long-loss',
     canonicalAssetId: 'EURUSDOTC',
     feedId: 'demo-api-eu.po.market',
@@ -253,4 +253,60 @@ test('captured-style source switch after a multi-minute outage records the gap a
   assert.equal(recoveredCandles[0]?.quality, 'GAP_AFFECTED');
   const immediateSignals = snapshot.signals.filter((signal) => signal.feedEpochId === recoveredEpoch && signal.signalCreatedAt < resumedAt + 25_000);
   assert.equal(immediateSignals.length, 0);
+});
+
+
+test('page to shadow handoff is continuity-preserving and does not mark candles gap-affected', async () => {
+  const journal = new MemoryJournal();
+  const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
+  await pipeline.initialize(0);
+  for (let index = 0; index < 12; index++) {
+    await pipeline.enqueue({ tick: tick(1_000 + index * 1_000, index, 'ws-3') });
+  }
+  const handoff = tick(12_050, 100, 'shadow-main-1');
+  await pipeline.enqueue({ tick: handoff });
+  for (let index = 1; index <= 8; index++) {
+    await pipeline.enqueue({ tick: tick(12_050 + index * 1_000, 100 + index, 'shadow-main-1') });
+  }
+  await pipeline.drain();
+
+  const snapshot = await journal.snapshot();
+  const handoffEvent = snapshot.continuityEvents.find((event) => event.eventType === 'PRIMARY_TRANSPORT_HANDOFF');
+  assert.ok(handoffEvent);
+  assert.equal(handoffEvent.previousConnectionId, 'ws-3');
+  assert.equal(handoffEvent.connectionId, 'shadow-main-1');
+  assert.equal(handoffEvent.gapMs, 50);
+  assert.equal(snapshot.continuityEvents.some((event) => event.eventType === 'SHORT_RECONNECT_GAP'), false);
+  assert.equal(snapshot.continuityEvents.filter((event) => event.eventType === 'EPOCH_STARTED').length, 1);
+  const boundaryCandles = snapshot.candles.filter((candle) => candle.startTimestamp >= 10_000 && candle.startTimestamp < 15_000);
+  assert.equal(boundaryCandles.some((candle) => candle.quality === 'GAP_AFFECTED'), false);
+});
+
+test('same market event observed by page and shadow during handoff is journaled only once', async () => {
+  const journal = new MemoryJournal();
+  const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
+  await pipeline.initialize(0);
+
+  const pageTick = tick(10_000, 1, 'ws-3');
+  const shadowTick: Tick = {
+    ...pageTick,
+    tickId: 'shadow-duplicate',
+    connectionId: 'shadow-main-1',
+    sequence: 0,
+    receivedAtEpochMs: pageTick.receivedAtEpochMs + 1,
+    receivedAtMonotonicMs: pageTick.receivedAtMonotonicMs + 1,
+    eventTimestampEpochMs: pageTick.eventTimestampEpochMs + 1,
+    observedTimestampDeltaMs: (pageTick.observedTimestampDeltaMs ?? 0) + 1,
+  };
+
+  await pipeline.enqueue({ tick: pageTick });
+  await pipeline.enqueue({ tick: shadowTick });
+  await pipeline.drain();
+
+  const snapshot = await journal.snapshot();
+  assert.equal(snapshot.ticks.length, 1);
+  assert.equal(snapshot.ticks[0]?.tickId, pageTick.tickId);
+  const handoffEvent = snapshot.continuityEvents.find((event) => event.eventType === 'PRIMARY_TRANSPORT_HANDOFF');
+  assert.ok(handoffEvent);
+  assert.equal(handoffEvent.gapMs, 1);
 });

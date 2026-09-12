@@ -8,20 +8,21 @@ The extension never clicks CALL/PUT, never sends `openOrder`, never executes a t
 
 Authentication/session packets used by the recovery socket are ephemeral runtime context. They are not written to IndexedDB, extension storage, logs, datasets, build artifacts, or source control.
 
-## Release 1.8.0
+## Release 1.8.1
 
-Release 1.8.0 keeps the MAIN-world native shadow feed from v1.7, but changes how short transport reconnects are interpreted scientifically.
+Release 1.8.1 is a focused integrity patch on top of the stable MAIN-world shadow transport from v1.8.0. It does not tune strategy scores or thresholds.
 
-Observed Pocket Option behavior closes and recreates the shadow Socket.IO connection periodically even while the tab is hidden. Those reconnects usually create only a ~4–6 second observation gap. The frozen continuity threshold is 15 seconds, so v1.8 treats a reconnect below that threshold as a **short reconnect gap**, not a complete quantitative epoch loss.
+The release adds:
 
-The release therefore adds:
+1. semantic cross-transport tick deduplication during page → shadow handoff;
+2. explicit `PRIMARY_TRANSPORT_HANDOFF` continuity events for lossless source takeover;
+3. no `GAP_AFFECTED` candle marking when the handoff gap is at or below 250 ms and no connection loss was observed;
+4. continued `SHORT_RECONNECT_GAP` handling for real short reconnects under the frozen 15-second continuity threshold;
+5. dataset schema v8 and feed-continuity event schema v3;
+6. stronger Git provenance discovery using npm `INIT_CWD`, `PWD`, and the process working directory;
+7. a build-metadata validation gate that fails when a Git checkout is detected but the compiled artifact does not identify the current `HEAD`.
 
-1. graceful short reconnect continuity under the frozen 15-second threshold;
-2. delayed feed-loss confirmation instead of invalidating results at the first socket close;
-3. boundary-candle `GAP_AFFECTED` marking without resetting all quantitative history;
-4. a single reconnect authority in MAIN World, while the Service Worker supervises only genuinely stalled streams;
-5. continuously refreshed shadow last-message/last-price telemetry from semantic market events;
-6. hard epoch reset only for a gap above 15 seconds, page-session change, confirmed prolonged loss, or incompatible source transition.
+The semantic dedupe key is restricted to exact feed + instrument + source timestamp + price matches observed across different transports inside a 2-second window. Same-connection observations are not deduplicated by this rule.
 
 
 ## Verified protocol
@@ -225,7 +226,7 @@ The dataset never contains the shadow authentication packet or account session s
 ## Schema versions
 
 ```text
-Application              1.8.0
+Application              1.8.1
 Tick                     v4
 Candle                   v4
 Decision                 v5

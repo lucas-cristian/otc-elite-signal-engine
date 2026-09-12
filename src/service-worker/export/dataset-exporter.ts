@@ -54,7 +54,7 @@ export class DatasetExporter {
     }));
     const reconnectTypes = new Set(['PAGE_WS_CLOSE', 'PAGE_WS_ERROR', 'SHADOW_WS_CLOSE', 'SHADOW_RECONNECT_SCHEDULED', 'SHADOW_STALL_DETECTED']);
     const manifestBase = {
-      datasetSchemaVersion: '7' as const,
+      datasetSchemaVersion: '8' as const,
       createdAt: metadata.createdAt,
       appVersion: metadata.appVersion,
       buildId: metadata.buildId,
@@ -82,7 +82,7 @@ export class DatasetExporter {
       configHashes,
       checksumSha256,
     };
-    const manifest: DatasetManifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 7, manifestBase) };
+    const manifest: DatasetManifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 8, manifestBase) };
     return { manifest, ...body };
   }
 }

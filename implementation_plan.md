@@ -2,11 +2,20 @@
 
 ## Status
 
-Release: **1.8.0**
+Release: **1.8.1**
 
 Protocol registry: **2026-09-12.1**
 
 Runtime objective: maintain signal-only OTC market observation without depending on a focused broker tab, while preserving strict scientific continuity boundaries and never executing orders.
+
+
+### v1.8.1 handoff integrity
+
+A lossless page → shadow takeover is now classified as `PRIMARY_TRANSPORT_HANDOFF` when the connection role changes between PAGE and SHADOW, no prior connection-loss signal exists, the page session is unchanged, and the observed gap is at most 250 ms. Such a handoff keeps the feed epoch and does not mark boundary candles `GAP_AFFECTED`.
+
+The quantitative pipeline also deduplicates an exact market event seen by different transports when feed, instrument, source timestamp, and price are identical and the receipts fall within a 2-second window. Real short reconnects remain governed by the 15-second continuity threshold.
+
+Build provenance is validated after compilation. In a Git checkout, `dist/build-metadata.json` must identify the current `HEAD`; archive/sandbox builds without `.git` may explicitly remain `UNAVAILABLE`.
 
 ## 1. Production transport
 
