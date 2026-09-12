@@ -1,5 +1,7 @@
 const OTC_BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
 const OTC_CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
+const otcPageOrigin = window.location.origin;
+const otcPageOriginUsable = otcPageOrigin !== 'null' && otcPageOrigin.startsWith('https://');
 const otcPageSessionId = crypto.randomUUID();
 const otcConnections = new Map<string, { nextSequence: number; pending: Map<number, Record<string, unknown>> }>();
 const otcBatch: Array<{ pageSessionId: string; event: Record<string, unknown> }> = [];
@@ -87,7 +89,7 @@ function otcPushSemantic(event: Record<string, unknown>): void {
 }
 
 window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
-  if (messageEvent.source !== window || messageEvent.origin !== window.location.origin) return;
+  if (!otcPageOriginUsable || messageEvent.source !== window || messageEvent.origin !== otcPageOrigin) return;
   if (!otcIsRecord(messageEvent.data) || messageEvent.data.source !== OTC_BRIDGE_SOURCE) return;
   const payload = messageEvent.data.payload;
   if (otcIsConnectionEvent(payload)) {
@@ -103,14 +105,16 @@ window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
   if (otcIsDiscoveryObservation(payload)) void chrome.runtime.sendMessage({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
 });
 
-const otcBridgeScript = document.createElement('script');
-otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
-otcBridgeScript.type = 'module';
-otcBridgeScript.onload = () => {
-  otcBridgeScript.remove();
-  void chrome.storage.local.get(['protocolMode']).then((settings) => {
-    const mode = settings.protocolMode === 'PROTOCOL_DISCOVERY' ? 'PROTOCOL_DISCOVERY' : 'PRODUCTION';
-    window.postMessage({ source: OTC_CONTROL_SOURCE, mode }, window.location.origin);
-  });
-};
-(document.head || document.documentElement).appendChild(otcBridgeScript);
+if (otcPageOriginUsable) {
+  const otcBridgeScript = document.createElement('script');
+  otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
+  otcBridgeScript.type = 'module';
+  otcBridgeScript.onload = () => {
+    otcBridgeScript.remove();
+    void chrome.storage.local.get(['protocolMode']).then((settings) => {
+      const mode = settings.protocolMode === 'PROTOCOL_DISCOVERY' ? 'PROTOCOL_DISCOVERY' : 'PRODUCTION';
+      window.postMessage({ source: OTC_CONTROL_SOURCE, mode }, otcPageOrigin);
+    });
+  };
+  (document.head || document.documentElement).appendChild(otcBridgeScript);
+}

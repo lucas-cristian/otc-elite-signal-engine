@@ -7,7 +7,7 @@ import { EntryResolver } from '../engine/decision/entry-resolver.js';
 import { ResultEngine } from '../evaluation/result-engine.js';
 import { RecoveryService } from '../storage/recovery-service.js';
 export const DEFAULT_PIPELINE_CONFIG = {
-    appVersion: '1.2.0',
+    appVersion: '1.3.0',
     executionMode: 'LIVE',
     timeframes: ['5s', '10s', '15s', '30s', '60s'],
     expirationSeconds: 60,
@@ -80,6 +80,10 @@ export class QuantPipeline {
         return this.processing;
     }
     async drain() {
+        await this.processing;
+    }
+    async finalizeThrough(nowMs) {
+        this.processing = this.processing.then(() => this.expirePending(nowMs));
         await this.processing;
     }
     async processObservation(observation) {

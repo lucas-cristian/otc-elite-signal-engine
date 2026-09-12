@@ -6,7 +6,9 @@ import type { JournalRepository } from '../storage/journal-repository.js';
 export interface ExportMetadata {
   appVersion: string;
   buildId: string;
+  sourceTreeSha256: string | null;
   gitCommit: string | null;
+  gitWorkingTreeClean: boolean | null;
   createdAt: number;
 }
 
@@ -28,11 +30,13 @@ export class DatasetExporter {
     const checksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
     const configHashes = [...new Set(snapshot.decisions.map((decision) => decision.configHash))].sort();
     const manifestBase = {
-      datasetSchemaVersion: '1' as const,
+      datasetSchemaVersion: '2' as const,
       createdAt: metadata.createdAt,
       appVersion: metadata.appVersion,
       buildId: metadata.buildId,
+      sourceTreeSha256: metadata.sourceTreeSha256,
       gitCommit: metadata.gitCommit,
+      gitWorkingTreeClean: metadata.gitWorkingTreeClean,
       tickCount: snapshot.ticks.length,
       decisionCount: snapshot.decisions.length,
       signalCount: snapshot.signals.length,
@@ -42,7 +46,7 @@ export class DatasetExporter {
     };
     const manifest: DatasetManifest = {
       ...manifestBase,
-      datasetId: canonicalEntityHash('DATASET', 1, manifestBase),
+      datasetId: canonicalEntityHash('DATASET', 2, manifestBase),
     };
     return { manifest, ...body };
   }

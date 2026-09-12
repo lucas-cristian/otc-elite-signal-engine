@@ -69,6 +69,47 @@ test('resolved result cannot use UNRESOLVED outcomes and flat does not invent re
   assert.equal(flat.economicReturn, null);
 });
 
+
+test('economic evaluation fails closed when payout expiration is unknown or mismatched', () => {
+  const engine = new ResultEngine(5000);
+  const unknownExpiration = engine.evaluateFromTick(signal(), tick(61_000, 11, 2));
+  assert.ok(unknownExpiration && unknownExpiration.resolutionStatus === 'RESOLVED');
+  assert.equal(unknownExpiration.directionalOutcome, 'CORRECT');
+  assert.equal(unknownExpiration.economicOutcome, 'UNKNOWN');
+  assert.equal(unknownExpiration.economicReturn, null);
+  assert.equal(unknownExpiration.economicEvaluationReason, 'PAYOUT_EXPIRATION_UNKNOWN');
+
+  const mismatchedSignal: SignalRecord = {
+    ...signal(),
+    payoutSnapshot: { ...signal().payoutSnapshot, expirationSeconds: 30 },
+  };
+  const mismatched = engine.evaluateFromTick(mismatchedSignal, tick(61_000, 9, 3));
+  assert.ok(mismatched && mismatched.resolutionStatus === 'RESOLVED');
+  assert.equal(mismatched.directionalOutcome, 'INCORRECT');
+  assert.equal(mismatched.economicOutcome, 'UNKNOWN');
+  assert.equal(mismatched.economicReturn, null);
+  assert.equal(mismatched.economicEvaluationReason, 'PAYOUT_EXPIRATION_MISMATCH');
+});
+
+test('economic evaluation is descriptive only when verified payout matches signal expiration', () => {
+  const engine = new ResultEngine(5000);
+  const eligibleSignal: SignalRecord = {
+    ...signal(),
+    payoutSnapshot: { ...signal().payoutSnapshot, expirationSeconds: 60, payoutRate: 0.8, quality: 'VERIFIED' },
+  };
+  const win = engine.evaluateFromTick(eligibleSignal, tick(61_000, 11, 4));
+  assert.ok(win && win.resolutionStatus === 'RESOLVED');
+  assert.equal(win.economicOutcome, 'WIN');
+  assert.equal(win.economicReturn, 0.8);
+  assert.equal(win.economicEvaluationReason, 'ELIGIBLE');
+
+  const loss = engine.evaluateFromTick(eligibleSignal, tick(61_000, 9, 5));
+  assert.ok(loss && loss.resolutionStatus === 'RESOLVED');
+  assert.equal(loss.economicOutcome, 'LOSS');
+  assert.equal(loss.economicReturn, -1);
+  assert.equal(loss.economicEvaluationReason, 'ELIGIBLE');
+});
+
 test('replay interleaves payout events and ticks through the same quantitative pipeline', async () => {
   const journal = new MemoryJournal();
   const config = { ...DEFAULT_PIPELINE_CONFIG, executionMode: 'LIVE' as const };
@@ -87,7 +128,7 @@ test('replay interleaves payout events and ticks through the same quantitative p
   }
   await pipeline.drain();
   const exporter = new DatasetExporter(journal);
-  const dataset = await exporter.create({ appVersion: '1.2.0', buildId: 'test', gitCommit: null, createdAt: start + 200_000 });
+  const dataset = await exporter.create({ appVersion: '1.3.0', buildId: 'test', sourceTreeSha256: 'source-hash', gitCommit: null, gitWorkingTreeClean: null, createdAt: start + 200_000 });
   assert.ok(dataset.decisions.length > 0);
   assert.equal(dataset.payoutSnapshots.length, 1);
   const replay = await new ReplayEngine().replay(dataset, config);

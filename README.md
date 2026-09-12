@@ -6,7 +6,7 @@ OTC Elite Signal Engine is a signal-only quantitative research extension for Chr
 
 The extension never clicks CALL/PUT, never sends orders, never executes trades, and never represents reference-feed outcomes as realized P&L. Protocol verification and scientific acceptance are performed against Pocket Option DEMO traffic.
 
-Release 1.2.0 contains an empirically verified parser for the exact binary Socket.IO market schema observed on `demo-api-eu.po.market` on 2026-09-12. Matching REAL-account endpoints remain `INFERRED` and therefore fail closed before CALL/PUT.
+Release 1.3.0 contains the empirically verified parser for the exact binary Socket.IO market schema observed on `demo-api-eu.po.market` on 2026-09-12. Matching REAL-account endpoints remain `INFERRED` and therefore fail closed before CALL/PUT.
 
 ## Verified protocol
 
@@ -124,7 +124,7 @@ pending entries = CALL/PUT decisions − decisions with EntryResolutionRecord
 pending results = signals − signals with ResultRecord
 ```
 
-In-memory maps are runtime caches only. IndexedDB schema version 3 prevents legacy tick/payout schemas from mixing with release 1.2.0 records.
+In-memory maps are runtime caches only. IndexedDB schema version 4 prevents pre-1.3.0 result semantics from mixing with the fail-closed economic model.
 
 ## Result semantics
 
@@ -133,13 +133,14 @@ The evaluation mode is `REFERENCE_FEED`.
 - `CORRECT` / `INCORRECT` / `FLAT` are directional reference outcomes.
 - Reference return is descriptive reference-feed evidence, not realized P&L.
 - Flat price does not become a broker refund unless platform settlement is independently verified.
-- Missing payout produces `economicReturn = null`.
+- Economic return is fail-closed: payout must be `VERIFIED`, have a non-null expiration, and match the signal expiration exactly. Unknown/mismatched expiry produces `economicOutcome = UNKNOWN` and `economicReturn = null`, including losses.
+- The observed `chafor` schema has `expirationSeconds = null`, so it is not currently eligible for economic scoring.
 
 ## Replay and export
 
-Scientific exports contain a versioned manifest, dataset ID, build/app metadata, config hashes, payout snapshots, ticks, candles, decisions, entry resolutions, decision/signal links, signals, results, and SHA-256 checksum.
+Scientific exports contain a versioned manifest, dataset ID, deterministic source-tree SHA-256, build/app metadata, optional clean-checkout Git SHA, config hashes, payout snapshots, ticks, candles, decisions, entry resolutions, decision/signal links, signals, results, and SHA-256 checksum.
 
-Replay interleaves payout snapshots and ticks chronologically and sends them through the same `QuantPipeline` used in live mode.
+Replay interleaves payout snapshots and ticks chronologically and sends them through the same `QuantPipeline` used in live mode. Export/replay finalize pending timeouts through the dataset creation timestamp so unresolved results are reproduced deterministically.
 
 ## Development
 
@@ -172,16 +173,18 @@ npm run verify
 
 ## Validation status
 
-Release 1.2.0 validation on 2026-09-12:
+Release 1.3.0 validation on 2026-09-12:
 
 - TypeScript strict typecheck: PASS
-- Unit/invariant tests: 16/16 PASS
+- Unit/invariant tests: 18/18 PASS
 - Manifest/build gate: PASS
 - Captured raw DEMO protocol replay through the decoder: 234 price events + 24 payout events
 - All captured DEMO price ticks: `VALID`
 - All captured DEMO price ticks: `LOCAL_RECEIPT`
 - All captured DEMO price ticks: `VERIFIED`
 - Captured quantitative integration: 234 ticks, 64 candles, 54 decisions, 4 signals, 2 resolved results within the capture window
+- Real exported v1.2.0 dataset replay: 440 ticks, 92 decisions, 17 signals, 17 results (8 resolved + 9 unresolved), 50% directional accuracy
+- Economic eligibility on that replay: 0/8 resolved results because every observed `chafor` payout had unknown expiration; mean economic return correctly remains null
 - No auto-trading, auto-click or order execution path exists
 
 The original raw capture also contained REAL-account metadata and must not be committed. Use only sanitized DEMO fixtures for documentation or regression work.

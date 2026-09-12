@@ -20,11 +20,13 @@ export class DatasetExporter {
         const checksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
         const configHashes = [...new Set(snapshot.decisions.map((decision) => decision.configHash))].sort();
         const manifestBase = {
-            datasetSchemaVersion: '1',
+            datasetSchemaVersion: '2',
             createdAt: metadata.createdAt,
             appVersion: metadata.appVersion,
             buildId: metadata.buildId,
+            sourceTreeSha256: metadata.sourceTreeSha256,
             gitCommit: metadata.gitCommit,
+            gitWorkingTreeClean: metadata.gitWorkingTreeClean,
             tickCount: snapshot.ticks.length,
             decisionCount: snapshot.decisions.length,
             signalCount: snapshot.signals.length,
@@ -34,7 +36,7 @@ export class DatasetExporter {
         };
         const manifest = {
             ...manifestBase,
-            datasetId: canonicalEntityHash('DATASET', 1, manifestBase),
+            datasetId: canonicalEntityHash('DATASET', 2, manifestBase),
         };
         return { manifest, ...body };
     }

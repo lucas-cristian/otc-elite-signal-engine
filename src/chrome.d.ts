@@ -7,6 +7,7 @@ declare namespace chrome {
     const onMessage: RuntimeMessageEvent;
     function sendMessage(message: unknown): Promise<unknown>;
     function getURL(path: string): string;
+    function getManifest(): { version: string };
     function openOptionsPage(): Promise<void>;
   }
   namespace storage {

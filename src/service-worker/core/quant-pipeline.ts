@@ -30,7 +30,7 @@ export interface QuantPipelineConfig {
 }
 
 export const DEFAULT_PIPELINE_CONFIG: QuantPipelineConfig = {
-  appVersion: '1.2.0',
+  appVersion: '1.3.0',
   executionMode: 'LIVE',
   timeframes: ['5s', '10s', '15s', '30s', '60s'],
   expirationSeconds: 60,
@@ -104,6 +104,11 @@ export class QuantPipeline {
   }
 
   public async drain(): Promise<void> {
+    await this.processing;
+  }
+
+  public async finalizeThrough(nowMs: number): Promise<void> {
+    this.processing = this.processing.then(() => this.expirePending(nowMs));
     await this.processing;
   }
 

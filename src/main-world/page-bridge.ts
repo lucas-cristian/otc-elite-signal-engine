@@ -7,6 +7,8 @@ import type { DiscoveryObservation, MainToIsolatedEvent, RuntimeMode } from '../
 
 const BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
 const CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
+const PAGE_ORIGIN = window.location.origin;
+const PAGE_ORIGIN_USABLE = PAGE_ORIGIN !== 'null' && PAGE_ORIGIN.startsWith('https://');
 
 function setupPageBridge(): void {
   const OriginalWebSocket = window.WebSocket;
@@ -14,7 +16,8 @@ function setupPageBridge(): void {
   let mode: RuntimeMode = 'PRODUCTION';
 
   const emit = (payload: MainToIsolatedEvent): void => {
-    window.postMessage({ source: BRIDGE_SOURCE, payload }, window.location.origin);
+    if (!PAGE_ORIGIN_USABLE) return;
+    window.postMessage({ source: BRIDGE_SOURCE, payload }, PAGE_ORIGIN);
   };
 
   const discoveryObservation = (
@@ -44,7 +47,7 @@ function setupPageBridge(): void {
   };
 
   window.addEventListener('message', (event: MessageEvent<unknown>) => {
-    if (event.source !== window || event.origin !== window.location.origin) return;
+    if (!PAGE_ORIGIN_USABLE || event.source !== window || event.origin !== PAGE_ORIGIN) return;
     const data = event.data;
     if (typeof data !== 'object' || data === null) return;
     const record = data as Record<string, unknown>;

@@ -2,12 +2,14 @@ import type { Candle, PayoutSnapshot, Tick } from './types.js';
 import type { DecisionRecord, DecisionSignalLink, EntryResolutionRecord, ResultRecord, SignalRecord } from './journal-types.js';
 
 export interface DatasetManifest {
-  datasetSchemaVersion: '1';
+  datasetSchemaVersion: '2';
   datasetId: string;
   createdAt: number;
   appVersion: string;
   buildId: string;
+  sourceTreeSha256: string | null;
   gitCommit: string | null;
+  gitWorkingTreeClean: boolean | null;
   tickCount: number;
   decisionCount: number;
   signalCount: number;

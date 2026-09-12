@@ -155,6 +155,7 @@ export interface DecisionSignalLink {
 export type ResolvedPriceOutcome = 'UP' | 'DOWN' | 'FLAT';
 export type ResolvedDirectionalOutcome = 'CORRECT' | 'INCORRECT' | 'FLAT';
 export type PlatformSettlementOutcome = 'WIN' | 'LOSS' | 'REFUND' | 'UNKNOWN';
+export type EconomicEvaluationReason = 'ELIGIBLE' | 'FLAT_REFERENCE_OUTCOME' | 'PAYOUT_RATE_MISSING' | 'PAYOUT_EXPIRATION_UNKNOWN' | 'PAYOUT_EXPIRATION_MISMATCH' | 'PAYOUT_UNVERIFIED' | 'RESULT_UNRESOLVED';
 export type SettlementConfidence = 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
 
 export interface SettlementMetadata {
@@ -166,7 +167,7 @@ export interface SettlementMetadata {
 
 export interface ResolvedResultRecord {
   resolutionStatus: 'RESOLVED';
-  resultSchemaVersion: '2';
+  resultSchemaVersion: '3';
   resultId: string;
   signalId: string;
   evaluationMode: 'REFERENCE_FEED';
@@ -177,6 +178,7 @@ export interface ResolvedResultRecord {
   directionalOutcome: ResolvedDirectionalOutcome;
   economicOutcome: PlatformSettlementOutcome;
   economicReturn: number | null;
+  economicEvaluationReason: EconomicEvaluationReason;
   settlementMetadata: SettlementMetadata;
   exitMarketSourceIdentity: MarketSourceIdentity;
   recoveredAcrossPageSession: boolean;
@@ -189,7 +191,7 @@ export type ResultUnresolvedReason = 'ASSET_FEED_LOST' | 'EXPIRY_TIMEOUT' | 'MAR
 
 export interface UnresolvedResultRecord {
   resolutionStatus: 'UNRESOLVED';
-  resultSchemaVersion: '2';
+  resultSchemaVersion: '3';
   resultId: string;
   signalId: string;
   evaluationMode: 'REFERENCE_FEED';
@@ -200,6 +202,7 @@ export interface UnresolvedResultRecord {
   directionalOutcome: 'UNRESOLVED';
   economicOutcome: 'UNKNOWN';
   economicReturn: null;
+  economicEvaluationReason: 'RESULT_UNRESOLVED';
   settlementMetadata: SettlementMetadata;
   exitMarketSourceIdentity: MarketSourceIdentity | null;
   unresolvedReason: ResultUnresolvedReason;

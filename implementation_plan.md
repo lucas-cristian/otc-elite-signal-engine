@@ -2,7 +2,7 @@
 
 ## Status
 
-Release: **1.2.0**
+Release: **1.3.0**
 
 Scientific runtime status: **DEMO BINARY MARKET SCHEMA VERIFIED FOR `demo-api-eu.po.market`; OTHER FEEDS FAIL CLOSED**.
 
@@ -131,7 +131,15 @@ MV3 recovery continues to derive pending entries/results from append-only journa
 
 Replay now interleaves payout snapshots and ticks by capture time and sends both through the same `QuantPipeline` used live.
 
-IndexedDB version is bumped to 3 to prevent pre-1.2.0 Tick/Payout schemas from mixing with the verified protocol model.
+IndexedDB version is bumped to 4 to prevent pre-1.3.0 result semantics from mixing with fail-closed economic evaluation.
+
+## 9A. Fail-closed economic evaluation and reproducible export
+
+Directional reference evaluation remains independent from payout. Economic evaluation is eligible only when the immutable payout snapshot is `VERIFIED`, has a non-null `expirationSeconds`, and exactly matches the signal expiration. The observed `chafor` schema does not carry expiration scope, so those snapshots remain scientifically ineligible for economic return.
+
+Result schema v3 records an explicit `economicEvaluationReason`. Dataset schema v2 records deterministic source-tree SHA-256, build ID, optional clean-checkout Git SHA and clean/unknown Git state. Live export and replay finalize pending timeout state through the dataset creation timestamp.
+
+The dashboard exposes live tick/candle telemetry, source quality, feed, latest price, payout scope, regime, blockers and pending entry/result counts.
 
 ## 10. Validation gates
 
@@ -143,11 +151,11 @@ npm run validate:manifest
 npm run verify
 ```
 
-Release 1.2.0 sandbox result:
+Release 1.3.0 sandbox result:
 
 ```text
 typecheck: PASS
-tests: 16/16 PASS
+tests: 18/18 PASS
 captured DEMO raw protocol decoder replay: PASS
 captured price semantic events: 234
 captured payout semantic events: 24

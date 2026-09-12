@@ -21,10 +21,13 @@ export class ReplayEngine {
                 await pipeline.enqueue({ tick: item.tick });
         }
         await pipeline.drain();
+        await pipeline.finalizeThrough(dataset.manifest.createdAt);
         return new DatasetExporter(journal).create({
             appVersion: dataset.manifest.appVersion,
             buildId: `${dataset.manifest.buildId}:replay`,
+            sourceTreeSha256: dataset.manifest.sourceTreeSha256 ?? null,
             gitCommit: dataset.manifest.gitCommit,
+            gitWorkingTreeClean: dataset.manifest.gitWorkingTreeClean ?? null,
             createdAt: dataset.manifest.createdAt,
         });
     }
