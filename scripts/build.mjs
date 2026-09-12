@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -75,6 +75,8 @@ const buildMetadata = {
 rmSync('dist', { recursive: true, force: true });
 execFileSync('tsc', ['-p', 'tsconfig.build.json'], { stdio: 'inherit' });
 execFileSync('tsc', ['-p', 'tsconfig.content.json'], { stdio: 'inherit' });
+copyFileSync('dist/content-build/isolated-world/content-script.js', 'dist/content.js');
+rmSync('dist/content-build', { recursive: true, force: true });
 mkdirSync('dist', { recursive: true });
 cpSync('public/manifest.json', 'dist/manifest.json');
 cpSync('src/ui/popup/index.html', 'dist/src/ui/popup/index.html');

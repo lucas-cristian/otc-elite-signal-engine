@@ -410,7 +410,22 @@ function setupPageBridge(): void {
         else if (eventName !== null) shadow.observeSubscription(data, eventName);
       }
       if (this.observed && mode === 'PROTOCOL_DISCOVERY') emit(discoveryObservation(this.connectionId, 'OUTBOUND', data, Date.now()));
-      super.send(data);
+
+      if (typeof data === 'string' || data instanceof Blob || data instanceof ArrayBuffer) {
+        super.send(data);
+        return;
+      }
+
+      if (ArrayBuffer.isView(data)) {
+        const bytes = new Uint8Array(data.byteLength);
+        bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        super.send(bytes.buffer);
+        return;
+      }
+
+      const bytes = new Uint8Array(data.byteLength);
+      bytes.set(new Uint8Array(data));
+      super.send(bytes.buffer);
     }
 
     private async processInbound(data: unknown, timing: { receivedAtEpochMs: number; receivedAtMonotonicMs: number }): Promise<void> {

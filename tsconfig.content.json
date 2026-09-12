@@ -2,7 +2,8 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
-    "module": "None",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
@@ -10,7 +11,10 @@
     "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "skipLibCheck": true,
-    "outFile": "dist/content.js"
+    "rootDir": "src",
+    "outDir": "dist/content-build",
+    "declaration": false,
+    "sourceMap": false
   },
   "files": ["src/chrome.d.ts", "src/isolated-world/content-script.ts"]
 }
