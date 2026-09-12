@@ -1,116 +1,92 @@
-import { NormalizedMarketEvent, ConnectionEventType } from '../common/models/market-events';
+import { extractSocketIoEventName, parsePocketOptionProductionFrame } from '../common/protocol/pocket-option-parser.js';
+import type { DiscoveryObservation, MainToIsolatedEvent, RuntimeMode } from '../common/protocol/market-events.js';
 
-declare global {
-  interface Window {
-    __loggedUpdates?: number;
-  }
-}
+const BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
+const CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
 
-// Injetado na página original
-function setupPageBridge() {
+function setupPageBridge(): void {
   const OriginalWebSocket = window.WebSocket;
-  
   let connectionCounter = 0;
+  let mode: RuntimeMode = 'PRODUCTION';
 
-  function generateConnectionId(): string {
-    return `ws_conn_${Date.now()}_${++connectionCounter}`;
-  }
+  const emit = (payload: MainToIsolatedEvent): void => {
+    window.postMessage({ source: BRIDGE_SOURCE, payload }, window.location.origin);
+  };
 
-  function emitEvent(event: NormalizedMarketEvent) {
-    window.postMessage(
-      {
-        source: 'OTC_ELITE_PAGE_BRIDGE',
-        payload: event
-      },
-      '*'
-    );
-  }
+  const discoveryObservation = (
+    connectionId: string,
+    direction: 'INBOUND' | 'OUTBOUND',
+    data: unknown,
+    receivedAtEpochMs: number,
+  ): DiscoveryObservation => {
+    let payloadType: DiscoveryObservation['payloadType'] = 'UNKNOWN';
+    let byteLength = 0;
+    let socketIoEventName: string | null = null;
+    if (typeof data === 'string') {
+      payloadType = 'TEXT';
+      byteLength = new TextEncoder().encode(data).byteLength;
+      socketIoEventName = extractSocketIoEventName(data);
+    } else if (data instanceof ArrayBuffer) {
+      payloadType = 'BINARY';
+      byteLength = data.byteLength;
+    } else if (data instanceof Blob) {
+      payloadType = 'BLOB';
+      byteLength = data.size;
+    }
+    return { type: 'DISCOVERY_OBSERVATION', connectionId, direction, payloadType, byteLength, socketIoEventName, receivedAtEpochMs };
+  };
+
+  window.addEventListener('message', (event: MessageEvent<unknown>) => {
+    if (event.source !== window || event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (typeof data !== 'object' || data === null) return;
+    const record = data as Record<string, unknown>;
+    if (record.source !== CONTROL_SOURCE) return;
+    const nextMode = record.mode;
+    if (nextMode === 'PRODUCTION' || nextMode === 'PROTOCOL_DISCOVERY') mode = nextMode;
+  });
 
   class InterceptedWebSocket extends OriginalWebSocket {
-    private connectionId: string;
+    private readonly connectionId: string;
+    private nextSequence = 0;
 
-    constructor(url: string | URL, protocols?: string | string[]) {
+    public constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
-      
-      this.connectionId = generateConnectionId();
+      this.connectionId = `ws-${++connectionCounter}`;
+      this.addEventListener('open', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'OPEN', receivedAtEpochMs: Date.now() }));
+      this.addEventListener('close', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'CLOSE', receivedAtEpochMs: Date.now() }));
+      this.addEventListener('error', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'ERROR', receivedAtEpochMs: Date.now() }));
+      this.addEventListener('message', (event: MessageEvent<unknown>) => this.processInbound(event.data));
+    }
 
-      this.addEventListener('open', () => {
-        console.log('[PageBridge] WebSocket opened:', String(url));
-        emitEvent({
-          type: 'CONNECTION',
-          connectionId: this.connectionId,
-          event: 'OPEN',
-          timestampMs: Date.now()
+    public override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+      if (mode === 'PROTOCOL_DISCOVERY') emit(discoveryObservation(this.connectionId, 'OUTBOUND', data, Date.now()));
+      super.send(data);
+    }
+
+    private processInbound(data: unknown): void {
+      const receivedAtEpochMs = Date.now();
+      const receivedAtMonotonicMs = performance.now();
+      const sequence = this.nextSequence++;
+      if (mode === 'PROTOCOL_DISCOVERY') {
+        emit(discoveryObservation(this.connectionId, 'INBOUND', data, receivedAtEpochMs));
+        return;
+      }
+      if (typeof data === 'string') {
+        const parsed = parsePocketOptionProductionFrame(data, { connectionId: this.connectionId, sequence, receivedAtEpochMs, receivedAtMonotonicMs });
+        if (parsed) emit(parsed);
+        return;
+      }
+      if (data instanceof Blob) {
+        void data.text().then((text) => {
+          const parsed = parsePocketOptionProductionFrame(text, { connectionId: this.connectionId, sequence, receivedAtEpochMs, receivedAtMonotonicMs });
+          if (parsed) emit(parsed);
         });
-      });
-
-      this.addEventListener('close', () => {
-        console.log('[PageBridge] WebSocket closed:', String(url));
-        emitEvent({
-          type: 'CONNECTION',
-          connectionId: this.connectionId,
-          event: 'CLOSE',
-          timestampMs: Date.now()
-        });
-      });
-
-      this.addEventListener('error', () => {
-        emitEvent({
-          type: 'CONNECTION',
-          connectionId: this.connectionId,
-          event: 'ERROR',
-          timestampMs: Date.now()
-        });
-      });
-
-      this.addEventListener('message', (event) => {
-        let payloadBuffer: Uint8Array;
-        
-        if (event.data instanceof ArrayBuffer) {
-          payloadBuffer = new Uint8Array(event.data);
-        } else if (event.data instanceof Blob) {
-          // Blobs representam um desafio síncrono. Em um caso real, 
-          // a leitura FileReader é necessária, mas omitiremos a conversão 
-          // assíncrona pesada na bridge por simplicidade do skeleton, 
-          // ou leremos sync se possível, mas Blob -> ArrayBuffer é async.
-          // Para simplificar, transformamos via promise e ignoramos atrasos.
-          event.data.arrayBuffer().then(buffer => {
-            emitEvent({
-              type: 'PRICE_FRAME',
-              connectionId: this.connectionId,
-              payloadBuffer: new Uint8Array(buffer),
-              timestampMs: Date.now()
-            });
-          });
-          return; // Atrasado
-        } else if (typeof event.data === 'string') {
-          payloadBuffer = new TextEncoder().encode(event.data);
-        } else {
-          return; // Tipo desconhecido
-        }
-
-        
-        if (typeof event.data === 'string' && event.data.startsWith('42[')) {
-           if (window.__loggedUpdates === undefined) { window.__loggedUpdates = 0; }
-           if (window.__loggedUpdates < 5) {
-             console.log("[PageBridge] Market Data Event: ", event.data.substring(0,250));
-             window.__loggedUpdates++;
-          }
-        }
-        emitEvent({
-          type: 'PRICE_FRAME',
-
-          connectionId: this.connectionId,
-          payloadBuffer,
-          timestampMs: Date.now()
-        });
-      });
+      }
     }
   }
 
-  // Substitui a referência global
-  window.WebSocket = InterceptedWebSocket as unknown as typeof WebSocket;
-  console.log('[PageBridge] WebSocket interception initialized.');
+  window.WebSocket = InterceptedWebSocket as typeof WebSocket;
 }
 
 setupPageBridge();

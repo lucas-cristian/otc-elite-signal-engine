@@ -1,0 +1,10 @@
+import { cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+rmSync('dist', { recursive: true, force: true });
+execFileSync('tsc', ['-p', 'tsconfig.build.json'], { stdio: 'inherit' });
+execFileSync('tsc', ['-p', 'tsconfig.content.json'], { stdio: 'inherit' });
+mkdirSync('dist', { recursive: true });
+cpSync('public/manifest.json', 'dist/manifest.json');
+cpSync('src/ui/popup/index.html', 'dist/src/ui/popup/index.html');
+cpSync('src/ui/dashboard/index.html', 'dist/src/ui/dashboard/index.html');
+writeFileSync('dist/build-metadata.json', JSON.stringify({ appVersion: '1.1.0', buildSystem: 'tsc' }, null, 2));

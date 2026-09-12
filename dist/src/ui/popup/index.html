@@ -1,17 +1,15 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>OTC Elite Signal Engine Popup</title>
-  <style>body{color:#fff;text-align:center;background:#090b0f;width:250px;padding:20px;font-family:system-ui,sans-serif}h1{color:#00e5a0;margin-bottom:5px;font-size:16px}p{color:#8892a4;margin-bottom:20px;font-size:12px}.btn{color:#000;cursor:pointer;background:#00e5a0;border:none;border-radius:6px;width:100%;padding:10px 15px;font-weight:700;transition:background .2s}.btn:hover{background:#00c78b}</style>
-  <script type="module" crossorigin src="/popup.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-P2Xu9kJm.js">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OTC Elite</title></head>
 <body>
-  <div id="root">
+  <main>
     <h1>OTC Elite Signal Engine</h1>
-    <p>Laboratório Quantitativo</p>
-    <button class="btn" id="open-dash">Abrir Dashboard 📊</button>
-  </div>
+    <p>Signal-only. No order execution.</p>
+    <p id="status"></p>
+    <button id="production">Production</button>
+    <button id="discovery">Protocol discovery</button>
+    <button id="dashboard">Dashboard</button>
+  </main>
+  <script type="module" src="./popup.js"></script>
 </body>
 </html>

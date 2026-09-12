@@ -1,84 +1,36 @@
-import { sha256 } from 'js-sha256';
+import { sha256 } from './sha256.js';
 
-export const canonicalHashVersion = 1;
+type CanonicalPrimitive = string | number | boolean | null;
+type CanonicalValue = CanonicalPrimitive | CanonicalValue[] | { [key: string]: CanonicalValue };
 
-/**
- * Serializa um payload em JSON canônico (chaves ordenadas recursivamente).
- */
-export function canonicalJson(payload: unknown): string {
-  if (payload === null) return 'null';
-  if (typeof payload === 'number') {
-    if (isNaN(payload) || !isFinite(payload)) {
-      throw new Error('NaN and Infinity are not allowed in canonical hashing');
+function normalize(value: unknown): CanonicalValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('Non-finite numbers are not canonical');
+    return Object.is(value, -0) ? 0 : value;
+  }
+  if (Array.isArray(value)) return value.map(normalize);
+  if (typeof value === 'object') {
+    const result: { [key: string]: CanonicalValue } = {};
+    for (const key of Object.keys(value as object).sort()) {
+      const member = (value as Record<string, unknown>)[key];
+      if (member === undefined) throw new TypeError('undefined is not canonical');
+      result[key] = normalize(member);
     }
-    // Handle -0
-    if (payload === 0 && 1 / payload === -Infinity) {
-      return '0';
-    }
-    return payload.toString();
+    return result;
   }
-  if (typeof payload === 'boolean' || typeof payload === 'string') {
-    return JSON.stringify(payload);
-  }
-  if (typeof payload === 'undefined') {
-    throw new Error('undefined is not allowed in canonical hashing');
-  }
-  if (payload instanceof Date) {
-    throw new Error('Date objects are not allowed in canonical hashing. Use epoch ms.');
-  }
-  if (Array.isArray(payload)) {
-    return '[' + payload.map(item => canonicalJson(item)).join(',') + ']';
-  }
-  if (typeof payload === 'object') {
-    const keys = Object.keys(payload).sort();
-    let out = '{';
-    for (let i = 0; i < keys.length; i++) {
-      const k = keys[i];
-      const v = (payload as Record<string, unknown>)[k];
-      if (v === undefined) {
-        throw new Error(`undefined is not allowed in canonical hashing (key: ${k})`);
-      }
-      out += JSON.stringify(k) + ':' + canonicalJson(v);
-      if (i < keys.length - 1) {
-        out += ',';
-      }
-    }
-    out += '}';
-    return out;
-  }
-  throw new Error(`Unsupported type for canonical json: ${typeof payload}`);
+  throw new TypeError(`Unsupported canonical value: ${typeof value}`);
 }
 
-/**
- * Codifica uma string em UTF-8 Uint8Array.
- */
-function utf8Encode(str: string): Uint8Array {
-  return new TextEncoder().encode(str);
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(normalize(value));
 }
 
-/**
- * Concatena dois Uint8Arrays.
- */
-function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const c = new Uint8Array(a.length + b.length);
-  c.set(a, 0);
-  c.set(b, a.length);
-  return c;
-}
-
-/**
- * Gera um SHA-256 canônico com separação de domínio.
- */
 export function canonicalEntityHash(domain: string, version: number, payload: unknown): string {
-  const prefixBytes = utf8Encode(`${domain}:v${version}:`);
-  const payloadBytes = utf8Encode(canonicalJson(payload));
-  const combined = concatBytes(prefixBytes, payloadBytes);
-  return sha256.hex(combined);
+  const bytes = new TextEncoder().encode(`${domain}:v${version}:${canonicalJson(payload)}`);
+  return sha256(bytes);
 }
 
-/**
- * Padroniza o identificador do ativo para comparações e identidades.
- */
 export function getCanonicalAssetId(rawAsset: string): string {
   return rawAsset.toUpperCase().replace(/[^A-Z0-9]/g, '');
 }

@@ -1,100 +1,113 @@
-import { DecisionRecord, ResolvedEntryRecord, UnresolvedEntryRecord, SignalRecord } from '../../../common/models/journal-types';
-import { Tick } from '../../../common/models/types';
-import { canonicalEntityHash } from '../../../common/hashing/canonical-hash';
+import { canonicalEntityHash } from '../../../common/hashing/canonical-hash.js';
+import type {
+  DecisionRecord,
+  EntryResolutionRecord,
+  ResolvedEntryRecord,
+  SignalRecord,
+} from '../../../common/models/journal-types.js';
+import type { PayoutSnapshot, Tick } from '../../../common/models/types.js';
 
-export type EntryResolutionResult = 
-  | { status: 'RESOLVED'; entry: ResolvedEntryRecord; signal: SignalRecord }
-  | { status: 'UNRESOLVED'; entry: UnresolvedEntryRecord };
+export interface EntryResolutionOutcome {
+  entry: EntryResolutionRecord;
+  signal: SignalRecord | null;
+}
+
+function unknownPayout(decision: DecisionRecord, capturedAt: number): PayoutSnapshot {
+  return {
+    payoutSnapshotSchemaVersion: '1',
+    canonicalAssetId: decision.canonicalAssetId,
+    expirationSeconds: decision.expirationSeconds,
+    payoutRate: null,
+    capturedAt,
+    source: 'UNKNOWN',
+    quality: 'UNKNOWN',
+  };
+}
 
 export class EntryResolver {
-  constructor(private readonly maxDelayMs: number = 3000) {}
+  public constructor(private readonly maxEntryResolutionDelayMs: number) {}
 
-  public resolveFromTick(decision: DecisionRecord, tick: Tick, nowMs: number): EntryResolutionResult | null {
-    if (decision.finalDecision !== 'CALL' && decision.finalDecision !== 'PUT') {
-      return null; // Apenas CALL e PUT precisam de resolução
+  public resolveFromTick(decision: DecisionRecord, tick: Tick, payoutSnapshot: PayoutSnapshot | null): EntryResolutionOutcome | null {
+    if ((decision.finalDecision !== 'CALL' && decision.finalDecision !== 'PUT') || decision.alertPublishedAt === null) return null;
+    if (tick.eventTimestampEpochMs < decision.alertPublishedAt) return null;
+    if (tick.eventTimestampEpochMs > decision.alertPublishedAt + this.maxEntryResolutionDelayMs) {
+      return { entry: this.unresolved(decision, 'ENTRY_TIMEOUT', tick.eventTimestampEpochMs), signal: null };
     }
+    if (tick.marketSourceIdentity.canonicalAssetId !== decision.canonicalAssetId) return null;
+    if (tick.integrity !== 'VALID') return null;
+    const entryPayload = {
+      decisionId: decision.decisionId,
+      entryTickId: tick.tickId,
+      referenceEntryTimestamp: tick.eventTimestampEpochMs,
+      referenceEntryPrice: tick.price,
+    };
+    const entry: ResolvedEntryRecord = {
+      resolutionStatus: 'RESOLVED',
+      entryResolutionSchemaVersion: '2',
+      entryResolutionId: canonicalEntityHash('ENTRY_RESOLUTION_RESOLVED', 2, entryPayload),
+      decisionId: decision.decisionId,
+      referenceEntryPrice: tick.price,
+      referenceEntryTimestamp: tick.eventTimestampEpochMs,
+      decisionPublishedAt: decision.decisionPublishedAt,
+      entryDelayMs: tick.eventTimestampEpochMs - decision.alertPublishedAt,
+      entryReferencePolicy: 'FIRST_TICK_AFTER_ALERT',
+      entryMarketSourceIdentity: tick.marketSourceIdentity,
+      entryPageSessionId: tick.pageSessionId,
+      entryTickId: tick.tickId,
+      resolvedAt: tick.receivedAtEpochMs,
+    };
+    const fingerprint = canonicalEntityHash('SIGNAL_FINGERPRINT', 2, {
+      canonicalAssetId: decision.canonicalAssetId,
+      evaluationWindowId: decision.evaluationWindowId,
+      structureRegime: decision.structureRegime,
+      volatilityRegime: decision.volatilityRegime,
+      strategyGroupId: 'CORE_STRATEGIES_V1',
+      direction: decision.finalDecision,
+      expirationSeconds: decision.expirationSeconds,
+      configHash: decision.configHash,
+    });
+    const signalId = canonicalEntityHash('SIGNAL', 2, {
+      signalFingerprint: fingerprint,
+      decisionId: decision.decisionId,
+      entryTickId: tick.tickId,
+    });
+    const signal: SignalRecord = {
+      signalSchemaVersion: '2',
+      signalId,
+      signalFingerprint: fingerprint,
+      decisionId: decision.decisionId,
+      executionMode: decision.executionMode,
+      canonicalAssetId: decision.canonicalAssetId,
+      direction: decision.finalDecision,
+      referenceEntryPrice: tick.price,
+      referenceEntryTimestamp: tick.eventTimestampEpochMs,
+      expirationSeconds: decision.expirationSeconds,
+      expectedExpiryTimestamp: tick.eventTimestampEpochMs + decision.expirationSeconds * 1000,
+      entryMarketSourceIdentity: tick.marketSourceIdentity,
+      entryPageSessionId: tick.pageSessionId,
+      payoutSnapshot: payoutSnapshot ?? unknownPayout(decision, tick.receivedAtEpochMs),
+      signalCreatedAt: tick.receivedAtEpochMs,
+    };
+    return { entry, signal };
+  }
 
-    if (decision.alertPublishedAt === null) {
-      return null; // O alerta não foi publicado
-    }
+  public timeout(decision: DecisionRecord, nowMs: number): EntryResolutionRecord | null {
+    if ((decision.finalDecision !== 'CALL' && decision.finalDecision !== 'PUT') || decision.alertPublishedAt === null) return null;
+    if (nowMs <= decision.alertPublishedAt + this.maxEntryResolutionDelayMs) return null;
+    return this.unresolved(decision, 'ENTRY_TIMEOUT', nowMs);
+  }
 
-    const delayMs = tick.eventTimestamp - decision.alertPublishedAt;
-
-    // Timeout (Unresolved)
-    if (delayMs > this.maxDelayMs || nowMs - decision.alertPublishedAt > this.maxDelayMs) {
-      const unresolvedId = canonicalEntityHash('ENTRY_RESOLUTION_UNRESOLVED', 1, {
-        decisionId: decision.decisionId,
-        nowMs
-      });
-      return {
-        status: 'UNRESOLVED',
-        entry: {
-          resolutionStatus: 'UNRESOLVED',
-          entryResolutionId: unresolvedId,
-          entryResolutionSchemaVersion: '1',
-          decisionId: decision.decisionId,
-          referenceEntryPrice: null,
-          referenceEntryTimestamp: null,
-          maxEntryResolutionDelayMs: this.maxDelayMs,
-          unresolvedReason: 'ENTRY_TIMEOUT',
-          resolvedAt: nowMs
-        }
-      };
-    }
-
-    // Apenas considera ticks que aconteceram DEPOIS (ou no exato milissegundo) da publicação do alerta
-    if (tick.eventTimestamp >= decision.alertPublishedAt) {
-      const entryId = canonicalEntityHash('ENTRY_RESOLUTION_RESOLVED', 1, {
-        decisionId: decision.decisionId,
-        tickId: tick.tickId
-      });
-
-      const entry: ResolvedEntryRecord = {
-        resolutionStatus: 'RESOLVED',
-        entryResolutionId: entryId,
-        entryResolutionSchemaVersion: '1',
-        decisionId: decision.decisionId,
-        referenceEntryPrice: tick.price,
-        referenceEntryTimestamp: tick.eventTimestamp,
-        decisionPublishedAt: decision.decisionPublishedAt!,
-        entryDelayMs: delayMs,
-        entrySource: 'WS_JSON', // TODO: extrair do MarketSourceIdentity
-        entryReferencePolicy: 'FIRST_TICK_AFTER_ALERT',
-        entryMarketSourceIdentity: tick.marketSourceIdentity,
-        entryPageSessionId: tick.pageSessionId,
-        entryTickId: tick.tickId,
-        resolvedAt: nowMs
-      };
-
-      const signalFingerprint = canonicalEntityHash('SIGNAL_FINGERPRINT', 1, {
-        decisionId: decision.decisionId,
-        referenceEntryTimestamp: tick.eventTimestamp
-      });
-
-      const signalId = canonicalEntityHash('SIGNAL', 1, {
-        fingerprint: signalFingerprint
-      });
-
-      const signal: SignalRecord = {
-        signalSchemaVersion: '1',
-        signalId,
-        signalFingerprint,
-        decisionId: decision.decisionId,
-        executionMode: decision.executionMode,
-        asset: decision.asset,
-        direction: decision.finalDecision as 'CALL' | 'PUT',
-        referenceEntryPrice: tick.price,
-        referenceEntryTimestamp: tick.eventTimestamp,
-        expirationSeconds: decision.expirationSeconds,
-        expectedExpiryTimestamp: tick.eventTimestamp + (decision.expirationSeconds * 1000),
-        entryMarketSourceIdentity: tick.marketSourceIdentity,
-        signalCreatedAt: nowMs
-      };
-
-      return { status: 'RESOLVED', entry, signal };
-    }
-
-    // Tick ainda está no passado em relação ao alerta, aguarda o próximo
-    return null;
+  private unresolved(decision: DecisionRecord, reason: 'ENTRY_TIMEOUT', resolvedAt: number): EntryResolutionRecord {
+    return {
+      resolutionStatus: 'UNRESOLVED',
+      entryResolutionSchemaVersion: '2',
+      entryResolutionId: canonicalEntityHash('ENTRY_RESOLUTION_UNRESOLVED', 2, { decisionId: decision.decisionId, reason }),
+      decisionId: decision.decisionId,
+      referenceEntryPrice: null,
+      referenceEntryTimestamp: null,
+      maxEntryResolutionDelayMs: this.maxEntryResolutionDelayMs,
+      unresolvedReason: reason,
+      resolvedAt,
+    };
   }
 }

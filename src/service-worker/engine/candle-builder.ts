@@ -1,177 +1,113 @@
-import { Tick, Candle, Timeframe, CandleLifecycle, TimestampBasis } from '../../common/models/types';
-import {
-  alignToCandleStart,
-  alignToCandleEnd,
-  intervalsBetween,
-  TIMEFRAME_MS,
-} from '../../common/time/candle-time';
+import type { Candle, Tick, Timeframe } from '../../common/models/types.js';
+import { alignToCandleEnd, alignToCandleStart, TIMEFRAME_MS } from '../../common/time/candle-time.js';
 
-interface CandleAccumState {
+interface CandleState {
+  start: number;
   open: number;
   high: number;
   low: number;
   close: number;
   tickCount: number;
-  intervalStart: number;
+  timestampBasis: Tick['timestampBasis'];
   gapAffected: boolean;
-  lastTickTimestamp: number;
 }
 
 export type CandleEmitter = (candle: Candle) => void;
 
 export class CandleBuilder {
-  private state: CandleAccumState | null = null;
-  private readonly asset: string;
-  private readonly timeframe: Timeframe;
-  private readonly timestampBasis: TimestampBasis;
-  private readonly emitter: CandleEmitter;
+  private state: CandleState | null = null;
 
-  constructor(
-    asset: string,
-    timeframe: Timeframe,
-    timestampBasis: TimestampBasis,
-    emitter: CandleEmitter,
-  ) {
-    this.asset = asset;
-    this.timeframe = timeframe;
-    this.timestampBasis = timestampBasis;
-    this.emitter = emitter;
-  }
+  public constructor(
+    private readonly canonicalAssetId: string,
+    private readonly timeframe: Timeframe,
+    private readonly emitter: CandleEmitter,
+  ) {}
 
-  /**
-   * Processa um tick. Mantém invariante: nenhum tick é "lookahead" —
-   * só o intervalo corrente é manipulado.
-   */
-  public ingestTick(tick: Tick): void {
-    const tickTs = tick.eventTimestamp;
-    const intervalStart = alignToCandleStart(tickTs, this.timeframe);
-
-    if (this.state === null) {
-      // Primeira observação — abre novo candle
-      this.state = this.openNewState(intervalStart, tick.price, false);
+  public ingest(tick: Tick): void {
+    const bucket = alignToCandleStart(tick.eventTimestampEpochMs, this.timeframe);
+    if (!this.state) {
+      this.state = this.open(bucket, tick, false);
       return;
     }
-
-    const currentIntervalStart = this.state.intervalStart;
-
-    if (intervalStart === currentIntervalStart) {
-      // Mesmo intervalo — atualiza OHLC
-      this.updateOHLC(tick.price);
-      this.state.lastTickTimestamp = tickTs;
+    if (bucket < this.state.start) return;
+    if (bucket === this.state.start) {
+      this.state.high = Math.max(this.state.high, tick.price);
+      this.state.low = Math.min(this.state.low, tick.price);
+      this.state.close = tick.price;
+      this.state.tickCount += 1;
+      if (tick.timestampBasis === 'LOCAL_RECEIPT') this.state.timestampBasis = 'LOCAL_RECEIPT';
       return;
     }
-
-    if (intervalStart > currentIntervalStart) {
-      // Novo intervalo — fecha o candle atual
-      this.closeAndEmit(this.state);
-
-      // Detecta gaps entre o candle fechado e o novo tick
-      const gapCount = intervalsBetween(
-        this.state.lastTickTimestamp,
-        tickTs,
-        this.timeframe,
-      );
-
-      for (let i = 0; i < gapCount; i++) {
-        const gapStart = currentIntervalStart + (i + 1) * TIMEFRAME_MS[this.timeframe];
-        this.emitEmpty(gapStart);
-      }
-
-      // Abre novo candle — gapAffected se houve qualquer gap
-      this.state = this.openNewState(intervalStart, tick.price, gapCount > 0);
-      return;
-    }
-
-    // Tick fora de ordem (retroativo) — descartado para garantir anti-lookahead
-    console.warn(
-      `[CandleBuilder] Tick retroativo descartado: tickTs=${tickTs} < intervalStart=${currentIntervalStart}`,
-    );
+    const previous = this.state;
+    this.emitClosed(previous);
+    const size = TIMEFRAME_MS[this.timeframe];
+    const missing = Math.max(0, Math.floor((bucket - previous.start) / size) - 1);
+    for (let index = 1; index <= missing; index++) this.emitEmpty(previous.start + index * size);
+    this.state = this.open(bucket, tick, missing > 0);
   }
 
-  /**
-   * Força o fechamento do candle atual como FORMING (parcial).
-   * Usado para snapshot de UI, não para análise quantitativa.
-   */
-  public getPartialCandle(): Candle | null {
-    if (!this.state) return null;
-    return this.buildCandle(this.state, CandleLifecycle.FORMING);
+  public advanceClock(epochMs: number): void {
+    if (!this.state) return;
+    if (epochMs < alignToCandleEnd(this.state.start, this.timeframe)) return;
+    const closed = this.state;
+    this.state = null;
+    this.emitClosed(closed);
   }
 
-  /**
-   * Fecha e emite o candle atual (ex: ao desligar o feed).
-   */
-  public flush(): void {
-    if (this.state) {
-      this.closeAndEmit(this.state);
-      this.state = null;
-    }
+  public partial(): Candle | null {
+    return this.state ? this.toCandle(this.state, 'FORMING') : null;
   }
 
-  // ── Helpers privados ──────────────────────────────────────────────────────
-
-  private openNewState(
-    intervalStart: number,
-    openPrice: number,
-    gapAffected: boolean,
-  ): CandleAccumState {
+  private open(start: number, tick: Tick, gapAffected: boolean): CandleState {
     return {
-      open: openPrice,
-      high: openPrice,
-      low: openPrice,
-      close: openPrice,
+      start,
+      open: tick.price,
+      high: tick.price,
+      low: tick.price,
+      close: tick.price,
       tickCount: 1,
-      intervalStart,
+      timestampBasis: tick.timestampBasis,
       gapAffected,
-      lastTickTimestamp: intervalStart,
     };
   }
 
-  private updateOHLC(price: number): void {
-    if (!this.state) return;
-    if (price > this.state.high) this.state.high = price;
-    if (price < this.state.low)  this.state.low  = price;
-    this.state.close = price;
-    this.state.tickCount++;
+  private emitClosed(state: CandleState): void {
+    this.emitter(this.toCandle(state, 'CLOSED'));
   }
 
-  private closeAndEmit(state: CandleAccumState): void {
-    this.emitter(this.buildCandle(state, CandleLifecycle.CLOSED));
-  }
-
-  private emitEmpty(intervalStart: number): void {
-    const candle: Candle = {
-      candleSchemaVersion: '1',
-      asset: this.asset,
+  private emitEmpty(start: number): void {
+    this.emitter({
+      candleSchemaVersion: '2',
+      canonicalAssetId: this.canonicalAssetId,
       timeframe: this.timeframe,
-      startTimestamp: intervalStart,
-      endTimestamp: alignToCandleEnd(intervalStart, this.timeframe),
-      lifecycle: CandleLifecycle.EMPTY_INTERVAL,
-      gapAffected: true,
+      startTimestamp: start,
+      endTimestamp: alignToCandleEnd(start, this.timeframe),
+      lifecycle: 'EMPTY_INTERVAL',
+      quality: 'GAP_AFFECTED',
       open: null,
       high: null,
       low: null,
       close: null,
       tickCount: 0,
-      timestampBasis: this.timestampBasis,
-    };
-    this.emitter(candle);
+      timestampBasis: 'LOCAL_RECEIPT',
+    });
   }
 
-  private buildCandle(state: CandleAccumState, lifecycle: CandleLifecycle): Candle {
+  private toCandle(state: CandleState, lifecycle: Candle['lifecycle']): Candle {
     return {
-      candleSchemaVersion: '1',
-      asset: this.asset,
+      candleSchemaVersion: '2',
+      canonicalAssetId: this.canonicalAssetId,
       timeframe: this.timeframe,
-      startTimestamp: state.intervalStart,
-      endTimestamp: alignToCandleEnd(state.intervalStart, this.timeframe),
+      startTimestamp: state.start,
+      endTimestamp: alignToCandleEnd(state.start, this.timeframe),
       lifecycle,
-      gapAffected: state.gapAffected,
+      quality: state.gapAffected ? 'GAP_AFFECTED' : 'CLEAN',
       open: state.open,
       high: state.high,
       low: state.low,
       close: state.close,
       tickCount: state.tickCount,
-      timestampBasis: this.timestampBasis,
+      timestampBasis: state.timestampBasis,
     };
   }
 }

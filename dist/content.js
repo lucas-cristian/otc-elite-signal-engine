@@ -1,1 +1,100 @@
-function e(e){return typeof e==`object`&&!!e&&!Array.isArray(e)}function t(e){return Array.isArray(e)}function n(e,...t){for(let n of t){let t=e[n];if(typeof t==`number`&&Number.isFinite(t))return t}return null}function r(r){let i=r[r.length-1];if(e(i))return n(i,`price`,`rate`,`value`,`val`,`close`);if(t(i)){let e=i[1];return typeof e==`number`&&Number.isFinite(e)?e:null}return null}function i(e){let t=e.indexOf(`[`);if(t<0)return null;let n=e.slice(0,t).trim();return/^\d+(?:-\d*)?$/.test(n)?e.slice(t):null}function a(e,t){return{tickSchemaVersion:`1.0`,tickId:`tick_`+Date.now()+`_`+Math.floor(Math.random()*1e3),marketSourceIdentity:{marketSourceIdentitySchemaVersion:`1.0`,platform:`POCKET_OPTION`,asset:e,marketType:`OTC`,source:`WS_JSON`,feedId:null,instrumentId:null,parserSchemaId:`GENERIC_JSON`},pageSessionId:`session_1`,eventTimestamp:Date.now(),price:t,timestampBasis:`LOCAL_RECEIVED`}}async function o(o){try{let s=i(new TextDecoder().decode(o));if(!s)return null;let c;try{c=JSON.parse(s)}catch{return null}if(!t(c)||c.length<2)return null;let l=c[0],u=c[1];if(typeof l!=`string`||!e(u))return null;if(l===`update`||l===`price_update`){let e=u.asset??u.symbol,t=n(u,`price`,`rate`,`val`);if(e&&t!==null)return a(String(e).replace(`_otc`,` OTC`),t)}if(l===`updateHistoryNew`&&t(u.history)&&u.history.length>0){let i=u.asset??u.symbol,o=u.history[u.history.length-1],s=e(o)?n(o,`price`,`rate`,`value`,`val`,`close`):t(o)?r([o]):null;if(i&&s!==null)return a(String(i).replace(`_otc`,` OTC`),s)}if(l===`updateStream`&&t(u.data)&&u.data.length>0){let e=u.asset??u.symbol,t=r(u.data);if(e&&t!==null)return a(String(e).replace(`_otc`,` OTC`),t)}let d=n(u,`price`);if(u.symbol&&d!==null)return l.includes(`chat`)||l.includes(`alert`)?null:a(String(u.symbol).replace(`_otc`,` OTC`),d);if(u.asset&&d!==null)return l.includes(`chat`)||l.includes(`alert`)?null:a(String(u.asset).replace(`_otc`,` OTC`),d)}catch{}return null}var s=new class{connections=new Map;frameParseTimeoutMs=500;emitter;constructor(e){this.emitter=e}handleConnectionEvent(e,t){if(t===`OPEN`)this.connections.set(e,{nextAssignedSequence:0,nextEmitSequence:0,pending:new Map,draining:!1});else{let t=this.connections.get(e);t&&(t.pending.clear(),this.connections.delete(e))}}async queueFrame(e,t){let n=this.connections.get(e);if(!n)return;let r=n.nextAssignedSequence++,i=new Promise(n=>{let i=setTimeout(()=>{console.warn(`[FrameSequencer] Timeout no parse do frame ${r} (conn: ${e})`),n(null)},this.frameParseTimeoutMs);o(t).then(e=>{clearTimeout(i),n(e)}).catch(e=>{clearTimeout(i),console.error(`[FrameSequencer] Erro no parse do frame ${r}:`,e),n(null)})});n.pending.set(r,i),n.draining||this.drain(e)}async drain(e){let t=this.connections.get(e);if(t&&!t.draining){t.draining=!0;try{for(;t.pending.has(t.nextEmitSequence);){let n=t.nextEmitSequence,r=t.pending.get(n);if(!r)break;let i=await r;if(t.pending.delete(n),t.nextEmitSequence++,!this.connections.has(e))break;i&&this.emitter(i)}}finally{t&&(t.draining=!1)}}}}(e=>{chrome.runtime.sendMessage({type:`MARKET_TICK`,payload:e}).catch(e=>{console.warn(`[ContentScript] Failed to send tick to SW:`,e)})});window.addEventListener(`message`,e=>{if(e.source!==window||e.data?.source!==`OTC_ELITE_PAGE_BRIDGE`)return;let t=e.data.payload;switch(t.type){case`CONNECTION`:s.handleConnectionEvent(t.connectionId,t.event);break;case`PRICE_FRAME`:s.queueFrame(t.connectionId,t.payloadBuffer)}});var c=document.createElement(`script`);c.src=chrome.runtime.getURL(`pageBridge.js`),c.type=`module`,c.onload=()=>c.remove(),(document.head||document.documentElement).appendChild(c),console.log(`[ContentScript] Isolated world initialized.`);
+"use strict";
+const OTC_BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
+const OTC_CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
+const otcPageSessionId = crypto.randomUUID();
+const otcConnections = new Map();
+const otcBatch = [];
+let otcFlushTimer = null;
+function otcIsRecord(value) {
+    return typeof value === 'object' && value !== null;
+}
+function otcIsConnectionEvent(value) {
+    if (!otcIsRecord(value) || value.type !== 'CONNECTION' || typeof value.connectionId !== 'string')
+        return false;
+    return value.event === 'OPEN' || value.event === 'CLOSE' || value.event === 'ERROR';
+}
+function otcIsDiscoveryObservation(value) {
+    return otcIsRecord(value)
+        && value.type === 'DISCOVERY_OBSERVATION'
+        && typeof value.connectionId === 'string'
+        && typeof value.byteLength === 'number';
+}
+function otcIsSemanticPriceEvent(value) {
+    if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PRICE')
+        return false;
+    if (typeof value.connectionId !== 'string' || !Number.isInteger(value.sequence))
+        return false;
+    if (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price <= 0)
+        return false;
+    if (typeof value.receivedAtEpochMs !== 'number' || typeof value.receivedAtMonotonicMs !== 'number')
+        return false;
+    if (!otcIsRecord(value.identity))
+        return false;
+    return value.identity.platform === 'POCKET_OPTION'
+        && value.identity.marketType === 'OTC'
+        && typeof value.identity.canonicalAssetId === 'string'
+        && typeof value.identity.instrumentId === 'string'
+        && typeof value.identity.parserSchemaId === 'string';
+}
+function otcScheduleFlush() {
+    if (otcFlushTimer !== null)
+        return;
+    otcFlushTimer = window.setTimeout(otcFlush, 50);
+}
+function otcFlush() {
+    otcFlushTimer = null;
+    if (otcBatch.length === 0)
+        return;
+    const payload = otcBatch.splice(0, otcBatch.length);
+    void chrome.runtime.sendMessage({ type: 'SEMANTIC_EVENT_BATCH', payload });
+}
+function otcPushSemantic(event) {
+    const connectionId = event.connectionId;
+    const sequence = event.sequence;
+    const state = otcConnections.get(connectionId);
+    if (!state || sequence < state.nextSequence)
+        return;
+    state.pending.set(sequence, event);
+    while (state.pending.has(state.nextSequence)) {
+        const ordered = state.pending.get(state.nextSequence);
+        if (!ordered)
+            break;
+        state.pending.delete(state.nextSequence);
+        state.nextSequence += 1;
+        otcBatch.push({ pageSessionId: otcPageSessionId, event: ordered });
+        if (otcBatch.length >= 50)
+            otcFlush();
+        else
+            otcScheduleFlush();
+    }
+}
+window.addEventListener('message', (messageEvent) => {
+    if (messageEvent.source !== window || messageEvent.origin !== window.location.origin)
+        return;
+    if (!otcIsRecord(messageEvent.data) || messageEvent.data.source !== OTC_BRIDGE_SOURCE)
+        return;
+    const payload = messageEvent.data.payload;
+    if (otcIsConnectionEvent(payload)) {
+        const connectionId = payload.connectionId;
+        if (payload.event === 'OPEN')
+            otcConnections.set(connectionId, { nextSequence: 0, pending: new Map() });
+        else
+            otcConnections.delete(connectionId);
+        return;
+    }
+    if (otcIsSemanticPriceEvent(payload)) {
+        otcPushSemantic(payload);
+        return;
+    }
+    if (otcIsDiscoveryObservation(payload))
+        void chrome.runtime.sendMessage({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
+});
+void chrome.storage.local.get(['protocolMode']).then((settings) => {
+    const mode = settings.protocolMode === 'PROTOCOL_DISCOVERY' ? 'PROTOCOL_DISCOVERY' : 'PRODUCTION';
+    window.postMessage({ source: OTC_CONTROL_SOURCE, mode }, window.location.origin);
+});
+const otcBridgeScript = document.createElement('script');
+otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
+otcBridgeScript.type = 'module';
+otcBridgeScript.onload = () => otcBridgeScript.remove();
+(document.head || document.documentElement).appendChild(otcBridgeScript);

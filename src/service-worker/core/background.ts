@@ -1,134 +1,85 @@
-import { Tick, Candle } from '../../common/models/types';
-import { MarketDataRouter } from './market-data-router';
-import { openJournalDB } from '../storage/idb-schema';
-import { JournalStore } from '../storage/journal-store';
-import { JournalReader } from '../storage/journal-reader';
-import { DecisionEngine } from '../engine/decision/decision-engine';
-import { EntryResolver } from '../engine/decision/entry-resolver';
-import { ResultEngine } from '../evaluation/result-engine';
-import { DecisionRecord, SignalRecord } from '../../common/models/journal-types';
+import type { DiscoveryObservation } from '../../common/protocol/market-events.js';
+import { isSemanticPriceEvent } from '../../common/validation/semantic-event-validator.js';
+import { createValidatedTick } from '../../common/validation/tick-factory.js';
+import { computeAnalytics } from '../evaluation/analytics.js';
+import { DatasetExporter } from '../export/dataset-exporter.js';
+import { QuantPipeline, DEFAULT_PIPELINE_CONFIG } from './quant-pipeline.js';
+import { IndexedDbJournal, openJournalDatabase } from '../storage/indexeddb-journal.js';
 
-// ── Journal ───────────────────────────────────────────────────────────────
-let journalStore: JournalStore | null = null;
-let journalReader: JournalReader | null = null;
+interface RuntimeContext {
+  journal: IndexedDbJournal;
+  pipeline: QuantPipeline;
+}
 
-openJournalDB().then((db) => {
-  journalStore = new JournalStore(db);
-  journalReader = new JournalReader(db);
-  console.log('[SW] IDB Journal opened successfully.');
-}).catch((err) => {
-  console.error('[SW] CRITICAL: Failed to open IDB Journal:', err);
-  // Fail-closed: sem journal, o SW não emite sinais
-});
+const discoveryRing: DiscoveryObservation[] = [];
 
-// ── Decision Engine, Entry Resolver & Result Engine ───────────────────────
-const decisionEngine = new DecisionEngine({
-  executionMode: 'LIVE',
-  appVersion: '1.0.0',
-  configHash: 'default_v1',
-  configSnapshot: {},
-  expirationSeconds: 60,
-  probabilityThreshold: 0.70
-});
+const runtime = (async (): Promise<RuntimeContext> => {
+  const db = await openJournalDatabase();
+  const journal = new IndexedDbJournal(db);
+  const settings = await chrome.storage.local.get(['protocolSchemaVerified']);
+  const pipeline = new QuantPipeline(journal, { ...DEFAULT_PIPELINE_CONFIG, protocolSchemaVerified: settings.protocolSchemaVerified === true });
+  await pipeline.initialize(Date.now());
+  return { journal, pipeline };
+})();
 
-const entryResolver = new EntryResolver(3000);
-const resultEngine = new ResultEngine(5000);
+function isDiscoveryObservation(value: unknown): value is DiscoveryObservation {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return record.type === 'DISCOVERY_OBSERVATION'
+    && typeof record.connectionId === 'string'
+    && typeof record.byteLength === 'number'
+    && (record.direction === 'INBOUND' || record.direction === 'OUTBOUND');
+}
 
-const pendingEntries = new Map<string, DecisionRecord>(); // decisionId -> DecisionRecord
-const pendingSignals = new Map<string, SignalRecord>(); // signalId -> SignalRecord
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+  if (typeof message !== 'object' || message === null) return;
+  const record = message as Record<string, unknown>;
 
-// ── Market Data Router ────────────────────────────────────────────────────
-const router = new MarketDataRouter({
-  timeframes: ['M1', 'M5', 'M15'],
-  staleThresholdMs: 30_000,
-  timestampBasis: 'LOCAL_RECEIVED',
-  onCandle: async (asset: string, candle: Candle) => {
-    if (candle.lifecycle === 'CLOSED') {
-      const nowMs = Date.now();
-      const decision = decisionEngine.evaluateCandle(candle, nowMs, 'OPTIMAL');
-      
-      if (journalStore) {
-        try {
-          await journalStore.appendDecision(decision);
-        } catch (err) {
-          console.error('[SW] Erro ao gravar Decision:', err);
-        }
+  if (record.type === 'SEMANTIC_EVENT_BATCH') {
+    const payload = record.payload;
+    if (!Array.isArray(payload)) return;
+    void runtime.then(async ({ pipeline }) => {
+      for (const item of payload) {
+        if (typeof item !== 'object' || item === null) continue;
+        const envelope = item as Record<string, unknown>;
+        if (typeof envelope.pageSessionId !== 'string' || !isSemanticPriceEvent(envelope.event)) continue;
+        const tick = createValidatedTick(envelope.event, envelope.pageSessionId);
+        if (tick.integrity !== 'VALID') continue;
+        await pipeline.enqueue({ tick, payoutSnapshot: envelope.event.payoutSnapshot });
       }
+      await pipeline.drain();
+      sendResponse({ ok: true });
+    }).catch((error: unknown) => sendResponse({ ok: false, error: error instanceof Error ? error.message : 'runtime failure' }));
+    return true;
+  }
 
-      if (decision.finalDecision === 'CALL' || decision.finalDecision === 'PUT') {
-        pendingEntries.set(decision.decisionId, decision);
-      }
+  if (record.type === 'PROTOCOL_DISCOVERY_OBSERVATION') {
+    if (isDiscoveryObservation(record.payload)) {
+      discoveryRing.push(record.payload);
+      if (discoveryRing.length > 100) discoveryRing.splice(0, discoveryRing.length - 100);
     }
-  },
-  onDataUnavailable: async (asset: string, reason: string) => {
-    console.warn(`[SW] DATA_UNAVAILABLE | ${asset} | reason=${reason}`);
-  },
-});
+    sendResponse({ ok: true });
+    return;
+  }
 
-// ── Message listener ──────────────────────────────────────────────────────
-self.addEventListener('message', async (event: MessageEvent) => {
-  const msg = event.data;
-  if (!msg || typeof msg !== 'object') return;
+  if (record.type === 'GET_DISCOVERY_OBSERVATIONS') {
+    sendResponse({ observations: [...discoveryRing] });
+    return;
+  }
 
-  switch (msg.type) {
-    case 'MARKET_TICK': {
-      const tick = msg.payload as Tick;
-      if (!tick || typeof tick.price !== 'number') return;
-      
-      router.routeTick(tick);
-      const nowMs = Date.now();
+  if (record.type === 'GET_ANALYTICS') {
+    void runtime.then(async ({ journal }) => sendResponse(computeAnalytics(await journal.snapshot())))
+      .catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
+    return true;
+  }
 
-      // 1. Resolve pending entries (Decision -> Signal)
-      if (pendingEntries.size > 0 && journalStore) {
-        for (const [decisionId, decision] of pendingEntries.entries()) {
-          if (decision.asset === tick.marketSourceIdentity.asset) {
-            const result = entryResolver.resolveFromTick(decision, tick, nowMs);
-            if (result) {
-              pendingEntries.delete(decisionId);
-              try {
-                await journalStore.appendEntryResolution(result.entry);
-                if (result.status === 'RESOLVED' && result.signal) {
-                  await journalStore.appendSignal(result.signal);
-                  pendingSignals.set(result.signal.signalId, result.signal);
-                  console.log(`[SW] Signal gerado: ${result.signal.direction} ${result.signal.asset}`, result.signal);
-                }
-              } catch (err) {
-                console.error('[SW] Erro ao gravar Entry/Signal:', err);
-              }
-            }
-          }
-        }
-      }
-
-      // 2. Resolve pending signals (Signal -> Result)
-      if (pendingSignals.size > 0 && journalStore) {
-        for (const [signalId, signal] of pendingSignals.entries()) {
-          if (signal.asset === tick.marketSourceIdentity.asset) {
-            const result = resultEngine.evaluateFromTick(signal, tick, nowMs);
-            if (result) {
-              pendingSignals.delete(signalId);
-              try {
-                await journalStore.appendResult(result.result);
-                console.log(`[SW] Result gerado: ${result.result.directionalOutcome} | Return: ${result.result.economicReturn}`);
-              } catch (err) {
-                console.error('[SW] Erro ao gravar Result:', err);
-              }
-            }
-          }
-        }
-      }
-      break;
-    }
-
-    case 'QUERY_PENDING_RESULTS': {
-      if (!journalReader) return;
-      const nowMs = msg.nowMs ?? Date.now();
-      journalReader.listPendingResults(nowMs).then(pending => {
-        console.log(`[SW] Pending results: ${pending.length}`);
-      });
-      break;
-    }
+  if (record.type === 'EXPORT_DATASET_JSON') {
+    void runtime.then(async ({ journal, pipeline }) => {
+      await pipeline.drain();
+      const exporter = new DatasetExporter(journal);
+      const dataset = await exporter.create({ appVersion: '1.1.0', buildId: 'local-tsc', gitCommit: null, createdAt: Date.now() });
+      sendResponse({ filename: `otc-elite-dataset-${dataset.manifest.datasetId.slice(0, 12)}.json`, json: JSON.stringify(dataset, null, 2) });
+    }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'export failure' }));
+    return true;
   }
 });
-
-console.log('[SW] Background service worker initialized.');

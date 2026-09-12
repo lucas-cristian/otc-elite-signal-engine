@@ -1,14 +1,14 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OTC Elite Signal Engine — Dashboard</title>
-  <script type="module" crossorigin src="/dashboard.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-P2Xu9kJm.js">
-  <link rel="stylesheet" crossorigin href="/assets/dashboard-D6rAhMrD.css">
-</head>
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OTC Elite Dashboard</title></head>
 <body>
-  <div id="root"></div>
+  <main>
+    <h1>OTC Elite Signal Engine</h1>
+    <p>Reference-feed analytics. Not realized P&amp;L.</p>
+    <pre id="analytics"></pre>
+    <button id="refresh">Refresh</button>
+    <button id="export">Export scientific dataset</button>
+  </main>
+  <script type="module" src="./dashboard.js"></script>
 </body>
 </html>

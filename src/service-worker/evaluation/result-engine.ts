@@ -1,144 +1,99 @@
-import { SignalRecord, ResultRecord, PriceOutcome, SignalDirectionalOutcome, PlatformSettlementOutcome, SettlementConfidence } from '../../common/models/journal-types';
-import { Tick } from '../../common/models/types';
-import { canonicalEntityHash } from '../../common/hashing/canonical-hash';
-
-export type ResultEvaluationResult = 
-  | { status: 'RESOLVED'; result: ResultRecord }
-  | { status: 'UNRESOLVED'; result: ResultRecord };
+import { canonicalEntityHash } from '../../common/hashing/canonical-hash.js';
+import { isCompatibleMarketSource } from '../../common/models/market-source-identity.js';
+import type {
+  ResolvedDirectionalOutcome,
+  ResolvedPriceOutcome,
+  ResultRecord,
+  SignalRecord,
+} from '../../common/models/journal-types.js';
+import type { Tick } from '../../common/models/types.js';
 
 export class ResultEngine {
-  constructor(private readonly maxTimeoutMs: number = 5000) {}
+  public constructor(private readonly maxExpiryResolutionDelayMs: number) {}
 
-  public evaluateFromTick(signal: SignalRecord, tick: Tick, nowMs: number): ResultEvaluationResult | null {
-    const timeSinceExpiry = tick.eventTimestamp - signal.expectedExpiryTimestamp;
-
-    // Se o tick ainda está no passado (antes do momento da expiração)
-    if (tick.eventTimestamp < signal.expectedExpiryTimestamp) {
-      // Mas se o relógio global já excedeu o timeout tolerável...
-      if (nowMs - signal.expectedExpiryTimestamp > this.maxTimeoutMs) {
-        return this.createUnresolved(signal, nowMs, 'EXPIRY_TIMEOUT');
-      }
-      return null; // Continua esperando
+  public evaluateFromTick(signal: SignalRecord, tick: Tick): ResultRecord | null {
+    if (tick.eventTimestampEpochMs < signal.expectedExpiryTimestamp) return null;
+    if (tick.eventTimestampEpochMs > signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs) {
+      return this.unresolved(signal, 'EXPIRY_TIMEOUT', tick.receivedAtEpochMs, null);
     }
-
-    // Se o tick chegou depois do expectedExpiryTimestamp, mas excedeu maxTimeoutMs, consideramos falha de feed?
-    // Depende. Se o tempo da corretora apenas demorou um pouco, usamos o primeiro tick que cruzou a linha.
-    // Mas se o tick que cruzou a linha ocorreu muito além do tempo, pode ser um feed stale.
-    if (timeSinceExpiry > this.maxTimeoutMs) {
-       return this.createUnresolved(signal, nowMs, 'EXPIRY_TIMEOUT');
-    }
-
-    // Resolve o resultado
-    let priceOutcome: PriceOutcome = 'FLAT';
-    if (tick.price > signal.referenceEntryPrice) priceOutcome = 'UP';
-    else if (tick.price < signal.referenceEntryPrice) priceOutcome = 'DOWN';
-
-    let directionalOutcome: SignalDirectionalOutcome = 'FLAT';
-    let economicOutcome: PlatformSettlementOutcome = 'REFUND';
-    let economicReturn: number = 0.0;
-
-    // Avaliação Factual (Fase 1 usa Inferred from Reference Price)
-    // Se o sinal era CALL e subiu -> CORRECT
-    if (signal.direction === 'CALL') {
-      if (priceOutcome === 'UP') {
-        directionalOutcome = 'CORRECT';
-        economicOutcome = 'WIN';
-        economicReturn = 0.8; // TODO: Payout parametrizável depois (Fase 8)
-      } else if (priceOutcome === 'DOWN') {
-        directionalOutcome = 'INCORRECT';
-        economicOutcome = 'LOSS';
-        economicReturn = -1.0;
-      }
-    } else if (signal.direction === 'PUT') {
-      if (priceOutcome === 'DOWN') {
-        directionalOutcome = 'CORRECT';
-        economicOutcome = 'WIN';
-        economicReturn = 0.8;
-      } else if (priceOutcome === 'UP') {
-        directionalOutcome = 'INCORRECT';
-        economicOutcome = 'LOSS';
-        economicReturn = -1.0;
-      }
-    }
-
-    const resultId = canonicalEntityHash('RESULT_RESOLVED', 1, {
+    if (tick.marketSourceIdentity.canonicalAssetId !== signal.canonicalAssetId) return null;
+    const compatibility = isCompatibleMarketSource(signal.entryMarketSourceIdentity, tick.marketSourceIdentity);
+    if (!compatibility.compatible) return this.unresolved(signal, 'MARKET_SOURCE_INCOMPATIBLE', tick.receivedAtEpochMs, tick);
+    if (tick.integrity !== 'VALID') return this.unresolved(signal, 'DATA_UNAVAILABLE', tick.receivedAtEpochMs, tick);
+    const priceOutcome: ResolvedPriceOutcome = tick.price > signal.referenceEntryPrice ? 'UP' : tick.price < signal.referenceEntryPrice ? 'DOWN' : 'FLAT';
+    const directionalOutcome: ResolvedDirectionalOutcome = priceOutcome === 'FLAT'
+      ? 'FLAT'
+      : (signal.direction === 'CALL' && priceOutcome === 'UP') || (signal.direction === 'PUT' && priceOutcome === 'DOWN')
+        ? 'CORRECT'
+        : 'INCORRECT';
+    const payout = signal.payoutSnapshot.payoutRate;
+    const economicOutcome = directionalOutcome === 'FLAT'
+      ? 'UNKNOWN'
+      : payout === null
+        ? 'UNKNOWN'
+        : directionalOutcome === 'CORRECT' ? 'WIN' : 'LOSS';
+    const economicReturn = economicOutcome === 'WIN' ? payout : economicOutcome === 'LOSS' ? -1 : null;
+    const resultPayload = {
       signalId: signal.signalId,
-      referenceExitTimestamp: tick.eventTimestamp
-    });
-
-    const result: ResultRecord = {
-      resolutionStatus: 'RESOLVED',
-      resultId,
-      resultSchemaVersion: '1',
-      signalId: signal.signalId,
-      
-      evaluationMode: 'REFERENCE_FEED',
-      
+      exitTickId: tick.tickId,
+      referenceExitTimestamp: tick.eventTimestampEpochMs,
       referenceExitPrice: tick.price,
-      referenceExitTimestamp: tick.eventTimestamp,
-      expiryTimingErrorMs: timeSinceExpiry, // Erro temporal entre a expiração teórica e o tick capturado
-      
+    };
+    return {
+      resolutionStatus: 'RESOLVED',
+      resultSchemaVersion: '2',
+      resultId: canonicalEntityHash('RESULT_RESOLVED', 2, resultPayload),
+      signalId: signal.signalId,
+      evaluationMode: 'REFERENCE_FEED',
+      referenceExitPrice: tick.price,
+      referenceExitTimestamp: tick.eventTimestampEpochMs,
+      expiryTimingErrorMs: tick.eventTimestampEpochMs - signal.expectedExpiryTimestamp,
       priceOutcome,
       directionalOutcome,
-      
       economicOutcome,
       economicReturn,
-      
       settlementMetadata: {
-        settlementMetadataSchemaVersion: '1',
-        confidence: SettlementConfidence.INFERRED,
-        source: 'INFERRED_FROM_REFERENCE_PRICE',
-        verifiedAt: nowMs
+        settlementMetadataSchemaVersion: '2',
+        confidence: economicOutcome === 'UNKNOWN' ? 'UNKNOWN' : 'INFERRED',
+        source: economicOutcome === 'UNKNOWN' ? null : 'REFERENCE_PRICE',
+        verifiedAt: null,
       },
-      
       exitMarketSourceIdentity: tick.marketSourceIdentity,
-      
-      recoveredAcrossPageSession: false, // Pode ser alterado se carregado do disco
-      entryPageSessionId: 'unknown',
+      recoveredAcrossPageSession: signal.entryPageSessionId !== tick.pageSessionId,
+      entryPageSessionId: signal.entryPageSessionId,
       exitPageSessionId: tick.pageSessionId,
-      
-      evaluatedAt: nowMs
+      evaluatedAt: tick.receivedAtEpochMs,
     };
-
-    return { status: 'RESOLVED', result };
   }
 
-  private createUnresolved(signal: SignalRecord, nowMs: number, reason: 'EXPIRY_TIMEOUT'): ResultEvaluationResult {
-    const resultId = canonicalEntityHash('RESULT_UNRESOLVED', 1, {
-      signalId: signal.signalId,
-      nowMs
-    });
+  public timeout(signal: SignalRecord, nowMs: number): ResultRecord | null {
+    if (nowMs <= signal.expectedExpiryTimestamp + this.maxExpiryResolutionDelayMs) return null;
+    return this.unresolved(signal, 'EXPIRY_TIMEOUT', nowMs, null);
+  }
 
-    const result: ResultRecord = {
+  private unresolved(
+    signal: SignalRecord,
+    reason: 'EXPIRY_TIMEOUT' | 'MARKET_SOURCE_INCOMPATIBLE' | 'DATA_UNAVAILABLE',
+    evaluatedAt: number,
+    tick: Tick | null,
+  ): ResultRecord {
+    return {
       resolutionStatus: 'UNRESOLVED',
-      resultId,
-      resultSchemaVersion: '1',
+      resultSchemaVersion: '2',
+      resultId: canonicalEntityHash('RESULT_UNRESOLVED', 2, { signalId: signal.signalId, reason }),
       signalId: signal.signalId,
-      
       evaluationMode: 'REFERENCE_FEED',
-      
       referenceExitPrice: null,
       referenceExitTimestamp: null,
       expiryTimingErrorMs: null,
-      
       priceOutcome: 'UNRESOLVED',
       directionalOutcome: 'UNRESOLVED',
-      
       economicOutcome: 'UNKNOWN',
       economicReturn: null,
-      
-      settlementMetadata: {
-        settlementMetadataSchemaVersion: '1',
-        confidence: SettlementConfidence.UNKNOWN,
-        source: null,
-        verifiedAt: null
-      },
-      
-      exitMarketSourceIdentity: null,
+      settlementMetadata: { settlementMetadataSchemaVersion: '2', confidence: 'UNKNOWN', source: null, verifiedAt: null },
+      exitMarketSourceIdentity: tick?.marketSourceIdentity ?? null,
       unresolvedReason: reason,
-      evaluatedAt: nowMs
+      evaluatedAt,
     };
-
-    return { status: 'UNRESOLVED', result };
   }
 }

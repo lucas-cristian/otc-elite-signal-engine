@@ -1,41 +1,18 @@
-import { Timeframe } from '../models/types';
+import type { Timeframe } from '../models/types.js';
 
-export const TIMEFRAME_MS: Record<Timeframe, number> = {
-  M1:  60_000,
-  M5:  300_000,
-  M15: 900_000,
+export const TIMEFRAME_MS: Readonly<Record<Timeframe, number>> = {
+  '5s': 5_000,
+  '10s': 10_000,
+  '15s': 15_000,
+  '30s': 30_000,
+  '60s': 60_000,
 };
 
-/**
- * Retorna o timestamp de início do intervalo de candle que contém `timestampMs`.
- * Alinhado ao epoch UTC — sem arredondamento por timezone local.
- */
 export function alignToCandleStart(timestampMs: number, timeframe: Timeframe): number {
-  const periodMs = TIMEFRAME_MS[timeframe];
-  return Math.floor(timestampMs / periodMs) * periodMs;
+  const size = TIMEFRAME_MS[timeframe];
+  return Math.floor(timestampMs / size) * size;
 }
 
-/**
- * Retorna o timestamp de fim (exclusivo) do intervalo de candle.
- */
-export function alignToCandleEnd(timestampMs: number, timeframe: Timeframe): number {
-  return alignToCandleStart(timestampMs, timeframe) + TIMEFRAME_MS[timeframe];
-}
-
-/**
- * Retorna true se dois timestamps pertencem ao mesmo intervalo de candle.
- */
-export function sameInterval(tsA: number, tsB: number, timeframe: Timeframe): boolean {
-  return alignToCandleStart(tsA, timeframe) === alignToCandleStart(tsB, timeframe);
-}
-
-/**
- * Calcula quantos intervalos de candle existem entre dois timestamps (sem sobreposição).
- * Usado para detecção de gap.
- */
-export function intervalsBetween(fromMs: number, toMs: number, timeframe: Timeframe): number {
-  const periodMs = TIMEFRAME_MS[timeframe];
-  const startA = alignToCandleStart(fromMs, timeframe);
-  const startB = alignToCandleStart(toMs, timeframe);
-  return Math.max(0, (startB - startA) / periodMs - 1);
+export function alignToCandleEnd(startTimestampMs: number, timeframe: Timeframe): number {
+  return startTimestampMs + TIMEFRAME_MS[timeframe];
 }

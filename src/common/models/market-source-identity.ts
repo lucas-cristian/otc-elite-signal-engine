@@ -1,49 +1,35 @@
-import { MarketSourceIdentity } from './types';
-import { getCanonicalAssetId } from '../hashing/canonical-hash';
+import type { MarketSourceIdentity } from './types.js';
+
+export type MarketSourceCompatibilityReason =
+  | 'MATCH'
+  | 'PLATFORM_MISMATCH'
+  | 'ASSET_MISMATCH'
+  | 'MARKET_TYPE_MISMATCH'
+  | 'INSTRUMENT_MISMATCH'
+  | 'FEED_MISMATCH'
+  | 'SOURCE_SEMANTICS_MISMATCH'
+  | 'INSUFFICIENT_IDENTITY';
 
 export interface MarketSourceCompatibility {
   compatible: boolean;
-  reason: 
-    | 'MATCH' 
-    | 'PLATFORM_MISMATCH' 
-    | 'ASSET_MISMATCH' 
-    | 'MARKET_TYPE_MISMATCH' 
-    | 'INSTRUMENT_MISMATCH' 
-    | 'FEED_MISMATCH' 
-    | 'SOURCE_SEMANTICS_MISMATCH' 
-    | 'INSUFFICIENT_IDENTITY';
+  reason: MarketSourceCompatibilityReason;
+}
+
+function symmetricOptionalMatch(left: string | null, right: string | null): 'MATCH' | 'MISMATCH' | 'INSUFFICIENT' {
+  if ((left === null) !== (right === null)) return 'INSUFFICIENT';
+  if (left !== null && right !== null && left !== right) return 'MISMATCH';
+  return 'MATCH';
 }
 
 export function isCompatibleMarketSource(entry: MarketSourceIdentity, exit: MarketSourceIdentity): MarketSourceCompatibility {
-  if (entry.platform !== exit.platform) {
-    return { compatible: false, reason: 'PLATFORM_MISMATCH' };
-  }
-  
-  if (getCanonicalAssetId(entry.asset) !== getCanonicalAssetId(exit.asset)) {
-    return { compatible: false, reason: 'ASSET_MISMATCH' };
-  }
-  
-  if (entry.marketType !== exit.marketType) {
-    return { compatible: false, reason: 'MARKET_TYPE_MISMATCH' };
-  }
-  
-  if (entry.instrumentId !== null && exit.instrumentId !== null && entry.instrumentId !== exit.instrumentId) {
-    return { compatible: false, reason: 'INSTRUMENT_MISMATCH' };
-  }
-  
-  if (entry.feedId !== null && exit.feedId !== null && entry.feedId !== exit.feedId) {
-    return { compatible: false, reason: 'FEED_MISMATCH' };
-  }
-  
-  if (entry.parserSchemaId !== null && exit.parserSchemaId !== null && entry.parserSchemaId !== exit.parserSchemaId) {
-    return { compatible: false, reason: 'SOURCE_SEMANTICS_MISMATCH' };
-  }
-  
-  // Rejeição por identidade insuficiente caso campos vitais estejam faltando em ambos e o source em si
-  // não for estritamente idêntico ou requerer ids extras.
-  if (entry.instrumentId === null && exit.instrumentId === null && entry.feedId === null && exit.feedId === null) {
-    return { compatible: false, reason: 'INSUFFICIENT_IDENTITY' };
-  }
-
+  if (entry.platform !== exit.platform) return { compatible: false, reason: 'PLATFORM_MISMATCH' };
+  if (entry.canonicalAssetId !== exit.canonicalAssetId) return { compatible: false, reason: 'ASSET_MISMATCH' };
+  if (entry.marketType !== exit.marketType) return { compatible: false, reason: 'MARKET_TYPE_MISMATCH' };
+  if (!entry.instrumentId || !exit.instrumentId || !entry.parserSchemaId || !exit.parserSchemaId) return { compatible: false, reason: 'INSUFFICIENT_IDENTITY' };
+  if (entry.instrumentId !== exit.instrumentId) return { compatible: false, reason: 'INSTRUMENT_MISMATCH' };
+  const feed = symmetricOptionalMatch(entry.feedId, exit.feedId);
+  if (feed === 'INSUFFICIENT') return { compatible: false, reason: 'INSUFFICIENT_IDENTITY' };
+  if (feed === 'MISMATCH') return { compatible: false, reason: 'FEED_MISMATCH' };
+  if (entry.source !== exit.source || entry.parserSchemaId !== exit.parserSchemaId) return { compatible: false, reason: 'SOURCE_SEMANTICS_MISMATCH' };
   return { compatible: true, reason: 'MATCH' };
 }

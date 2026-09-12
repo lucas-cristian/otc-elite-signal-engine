@@ -1,35 +1,19 @@
 {
   "name": "otc-elite-signal-engine",
-  "version": "1.0.0",
-  "description": "Motor preditivo OTC e gerador de sinais",
-  "main": "index.js",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "vite build",
-    "dev": "vite",
-    "typecheck": "tsc --noEmit"
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "build:test": "node scripts/build-test.mjs",
+    "test": "npm run build:test && node --test .test-dist/tests/*.test.js",
+    "validate:manifest": "node scripts/validate-manifest.mjs",
+    "verify": "npm run typecheck && npm test && npm run build && npm run validate:manifest"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "engines": { "node": ">=20" },
   "devDependencies": {
-    "@types/chrome": "^0.2.9",
-    "@types/react": "^19.3.0",
-    "@types/react-dom": "^19.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.70.0",
-    "@typescript-eslint/parser": "^8.70.0",
-    "@vitejs/plugin-react": "^6.1.1",
-    "eslint": "^10.10.0",
-    "fake-indexeddb": "^6.2.5",
-    "prettier": "^3.9.6",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
-    "typescript": "^6.0.3",
-    "vite": "^8.3.0",
-    "vitest": "^5.0.0"
-  },
-  "dependencies": {
-    "js-sha256": "^1.0.0"
-  },
-  "type": "module"
+    "typescript": "^5.8.3"
+  }
 }

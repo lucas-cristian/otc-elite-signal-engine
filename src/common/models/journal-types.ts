@@ -1,31 +1,21 @@
-import {
+import type {
+  EventIntegrity,
   ExecutionMode,
   MarketSourceIdentity,
-  EntryReferencePolicy,
-  DataQuality,
+  OperationalDataState,
+  PayoutSnapshot,
   SourceQuality,
-  PriceSource,
-} from './types';
+  StructureRegime,
+  Timeframe,
+  VolatilityRegime,
+} from './types.js';
 
-export interface StrategyEvaluation {
-  strategyId: string;
-  strategyVersion: string;
-  direction: 'CALL' | 'PUT' | 'NO_TRADE';
-  score: number | null;
-  weight: number;
-}
-
-export interface MarketRegimeSnapshot {
-  structure: 'TREND_UP' | 'TREND_DOWN' | 'RANGING' | null;
-  volatility: 'HIGH' | 'LOW' | 'NORMAL' | null;
-}
-
-export interface EvidenceSnapshot {
-  combinedScore: number | null;
-  capped: boolean;
-}
+export type SignalDirection = 'CALL' | 'PUT';
+export type FinalDecision = SignalDirection | 'NO_TRADE' | 'BLOCKED' | 'DATA_UNAVAILABLE';
+export type EvidenceFamily = 'MOMENTUM' | 'REJECTION' | 'TICK_FLOW' | 'STRUCTURE' | 'REGIME' | 'DISTANCE' | 'CLASSICAL';
 
 export interface FeatureSnapshot {
+  featureSchemaVersion: '2';
   computedAt: number;
   informationCutoffTimestamp: number;
   usedPartialCandle: boolean;
@@ -33,29 +23,71 @@ export interface FeatureSnapshot {
   features: Record<string, number | null>;
 }
 
+export interface MarketRegimeSnapshot {
+  structure: StructureRegime;
+  volatility: VolatilityRegime;
+}
+
+export interface StrategyEvaluation {
+  strategyId: string;
+  strategyVersion: string;
+  direction: SignalDirection | 'NO_TRADE';
+  rawScore: number;
+  evidence: EvidenceContribution[];
+  blockers: string[];
+}
+
+export interface EvidenceContribution {
+  family: EvidenceFamily;
+  direction: SignalDirection;
+  strength: number;
+}
+
+export interface EvidenceSnapshot {
+  evidenceSchemaVersion: '2';
+  familyScores: Partial<Record<EvidenceFamily, number>>;
+  modelScore: number;
+  dominantDirection: SignalDirection | null;
+  denominator: number;
+  clipped: boolean;
+}
+
+export interface EvaluationWindow {
+  evaluationWindowId: string;
+  canonicalAssetId: string;
+  timeframe: Timeframe;
+  candleStartTimestamp: number;
+  windowStartTimestamp: number;
+  windowEndTimestamp: number;
+  expirationSeconds: number;
+  configHash: string;
+}
+
 export interface DecisionRecord {
+  decisionSchemaVersion: '2';
   decisionId: string;
-  decisionSchemaVersion: string;
+  decisionGranularityKey: string;
   executionMode: ExecutionMode;
-  asset: string;
+  canonicalAssetId: string;
+  timeframe: Timeframe;
   decisionComputedAt: number;
   decisionPublishedAt: number;
   alertPublishedAt: number | null;
   evaluationWindowId: string;
-  candleStartTimestamp: number | null;
-  candidateDirection: 'CALL' | 'PUT' | null;
-  finalDecision: 'CALL' | 'PUT' | 'NO_TRADE' | 'BLOCKED' | 'DATA_UNAVAILABLE';
+  candleStartTimestamp: number;
+  candidateDirection: SignalDirection | null;
+  finalDecision: FinalDecision;
   modelScore: number | null;
-  calibratedProbability: number | null;
-  structureRegime: 'TREND_UP' | 'TREND_DOWN' | 'RANGING' | null;
-  volatilityRegime: 'HIGH' | 'LOW' | 'NORMAL' | null;
-  strategySnapshots: StrategyEvaluation[] | null;
+  calibratedProbability: null;
+  structureRegime: StructureRegime;
+  volatilityRegime: VolatilityRegime;
+  strategySnapshots: StrategyEvaluation[];
   featureSnapshot: FeatureSnapshot | null;
-  regimeSnapshot: MarketRegimeSnapshot | null;
   evidenceSnapshot: EvidenceSnapshot | null;
-  sourceQuality: SourceQuality | null;
+  sourceQuality: SourceQuality;
+  eventIntegrity: EventIntegrity;
+  operationalDataState: OperationalDataState;
   blockers: string[];
-  dataQuality: DataQuality;
   expirationSeconds: number;
   configHash: string;
   configSnapshot: Record<string, unknown>;
@@ -68,15 +100,14 @@ export type EntryUnresolvedReason = 'ENTRY_TIMEOUT' | 'FEED_STALE' | 'DATA_UNAVA
 
 export interface ResolvedEntryRecord {
   resolutionStatus: 'RESOLVED';
+  entryResolutionSchemaVersion: '2';
   entryResolutionId: string;
-  entryResolutionSchemaVersion: string;
   decisionId: string;
   referenceEntryPrice: number;
   referenceEntryTimestamp: number;
   decisionPublishedAt: number;
   entryDelayMs: number;
-  entrySource: PriceSource;
-  entryReferencePolicy: EntryReferencePolicy;
+  entryReferencePolicy: 'FIRST_TICK_AFTER_ALERT';
   entryMarketSourceIdentity: MarketSourceIdentity;
   entryPageSessionId: string;
   entryTickId: string;
@@ -85,8 +116,8 @@ export interface ResolvedEntryRecord {
 
 export interface UnresolvedEntryRecord {
   resolutionStatus: 'UNRESOLVED';
+  entryResolutionSchemaVersion: '2';
   entryResolutionId: string;
-  entryResolutionSchemaVersion: string;
   decisionId: string;
   referenceEntryPrice: null;
   referenceEntryTimestamp: null;
@@ -97,58 +128,53 @@ export interface UnresolvedEntryRecord {
 
 export type EntryResolutionRecord = ResolvedEntryRecord | UnresolvedEntryRecord;
 
+export interface SignalRecord {
+  signalSchemaVersion: '2';
+  signalId: string;
+  signalFingerprint: string;
+  decisionId: string;
+  executionMode: ExecutionMode;
+  canonicalAssetId: string;
+  direction: SignalDirection;
+  referenceEntryPrice: number;
+  referenceEntryTimestamp: number;
+  expirationSeconds: number;
+  expectedExpiryTimestamp: number;
+  entryMarketSourceIdentity: MarketSourceIdentity;
+  entryPageSessionId: string;
+  payoutSnapshot: PayoutSnapshot;
+  signalCreatedAt: number;
+}
+
 export interface DecisionSignalLink {
   decisionId: string;
   signalId: string;
   linkedAt: number;
 }
 
-export interface SignalRecord {
-  signalSchemaVersion: string;
-  signalId: string;
-  signalFingerprint: string;
-  decisionId: string;
-  executionMode: ExecutionMode;
-  asset: string;
-  direction: 'CALL' | 'PUT';
-  referenceEntryPrice: number;
-  referenceEntryTimestamp: number;
-  expirationSeconds: number;
-  expectedExpiryTimestamp: number;
-  entryMarketSourceIdentity: MarketSourceIdentity;
-  signalCreatedAt: number;
-}
-
-export type PriceOutcome = 'UP' | 'DOWN' | 'FLAT' | 'UNRESOLVED';
-export type SignalDirectionalOutcome = 'CORRECT' | 'INCORRECT' | 'FLAT' | 'UNRESOLVED';
+export type ResolvedPriceOutcome = 'UP' | 'DOWN' | 'FLAT';
+export type ResolvedDirectionalOutcome = 'CORRECT' | 'INCORRECT' | 'FLAT';
 export type PlatformSettlementOutcome = 'WIN' | 'LOSS' | 'REFUND' | 'UNKNOWN';
-
-export enum SettlementConfidence {
-  VERIFIED = 'VERIFIED',
-  INFERRED = 'INFERRED',
-  UNKNOWN = 'UNKNOWN'
-}
+export type SettlementConfidence = 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
 
 export interface SettlementMetadata {
-  settlementMetadataSchemaVersion: string;
+  settlementMetadataSchemaVersion: '2';
   confidence: SettlementConfidence;
-  source: 'PLATFORM_PROTOCOL' | 'PLATFORM_DOM' | 'INFERRED_FROM_REFERENCE_PRICE' | null;
+  source: 'PLATFORM_PROTOCOL' | 'PLATFORM_DOM' | 'REFERENCE_PRICE' | null;
   verifiedAt: number | null;
 }
 
-export type UnresolvedReason = 'ASSET_FEED_LOST' | 'EXPIRY_TIMEOUT' | 'MARKET_SOURCE_INCOMPATIBLE';
-
 export interface ResolvedResultRecord {
   resolutionStatus: 'RESOLVED';
+  resultSchemaVersion: '2';
   resultId: string;
-  resultSchemaVersion: string;
   signalId: string;
   evaluationMode: 'REFERENCE_FEED';
   referenceExitPrice: number;
   referenceExitTimestamp: number;
   expiryTimingErrorMs: number;
-  priceOutcome: PriceOutcome;
-  directionalOutcome: SignalDirectionalOutcome;
+  priceOutcome: ResolvedPriceOutcome;
+  directionalOutcome: ResolvedDirectionalOutcome;
   economicOutcome: PlatformSettlementOutcome;
   economicReturn: number | null;
   settlementMetadata: SettlementMetadata;
@@ -159,10 +185,12 @@ export interface ResolvedResultRecord {
   evaluatedAt: number;
 }
 
+export type ResultUnresolvedReason = 'ASSET_FEED_LOST' | 'EXPIRY_TIMEOUT' | 'MARKET_SOURCE_INCOMPATIBLE' | 'DATA_UNAVAILABLE';
+
 export interface UnresolvedResultRecord {
   resolutionStatus: 'UNRESOLVED';
+  resultSchemaVersion: '2';
   resultId: string;
-  resultSchemaVersion: string;
   signalId: string;
   evaluationMode: 'REFERENCE_FEED';
   referenceExitPrice: null;
@@ -174,7 +202,7 @@ export interface UnresolvedResultRecord {
   economicReturn: null;
   settlementMetadata: SettlementMetadata;
   exitMarketSourceIdentity: MarketSourceIdentity | null;
-  unresolvedReason: UnresolvedReason;
+  unresolvedReason: ResultUnresolvedReason;
   evaluatedAt: number;
 }
 

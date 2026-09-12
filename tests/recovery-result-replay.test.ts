@@ -1,0 +1,87 @@
+import { test } from 'node:test';
+import * as assert from 'node:assert/strict';
+import type { DecisionRecord, SignalRecord } from '../src/common/models/journal-types.js';
+import type { MarketSourceIdentity, Tick } from '../src/common/models/types.js';
+import { MemoryJournal } from '../src/service-worker/storage/memory-journal.js';
+import { RecoveryService } from '../src/service-worker/storage/recovery-service.js';
+import { ResultEngine } from '../src/service-worker/evaluation/result-engine.js';
+import { QuantPipeline, DEFAULT_PIPELINE_CONFIG } from '../src/service-worker/core/quant-pipeline.js';
+import { DatasetExporter } from '../src/service-worker/export/dataset-exporter.js';
+import { ReplayEngine } from '../src/service-worker/replay/replay-engine.js';
+
+const source: MarketSourceIdentity = {
+  marketSourceIdentitySchemaVersion: '2', platform: 'POCKET_OPTION', canonicalAssetId: 'EURUSDOTC', marketType: 'OTC',
+  source: 'POCKET_OPTION_WS_JSON', feedId: null, instrumentId: 'EURUSD_otc', parserSchemaId: 'POCKET_OPTION_SOCKETIO_DIRECT_V1',
+};
+
+function decision(): DecisionRecord {
+  return {
+    decisionSchemaVersion: '2', decisionId: 'd1', decisionGranularityKey: 'g1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', timeframe: '5s',
+    decisionComputedAt: 1000, decisionPublishedAt: 1000, alertPublishedAt: 1000, evaluationWindowId: 'e1', candleStartTimestamp: 0,
+    candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.8, calibratedProbability: null, structureRegime: 'TREND_UP', volatilityRegime: 'NORMAL',
+    strategySnapshots: [], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [],
+    expirationSeconds: 60, configHash: 'cfg', configSnapshot: {}, appVersion: '1', marketEpisodeId: null, createdAt: 1000,
+  };
+}
+
+function signal(): SignalRecord {
+  return {
+    signalSchemaVersion: '2', signalId: 's1', signalFingerprint: 'f1', decisionId: 'd1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', direction: 'CALL',
+    referenceEntryPrice: 10, referenceEntryTimestamp: 1000, expirationSeconds: 60, expectedExpiryTimestamp: 61_000, entryMarketSourceIdentity: source,
+    entryPageSessionId: 'page-a', payoutSnapshot: { payoutSnapshotSchemaVersion: '1', canonicalAssetId: 'EURUSDOTC', expirationSeconds: 60, payoutRate: 0.8, capturedAt: 900, source: 'PLATFORM_PROTOCOL', quality: 'VERIFIED' }, signalCreatedAt: 1000,
+  };
+}
+
+function tick(ts: number, price: number, seq: number, identity = source): Tick {
+  return {
+    tickSchemaVersion: '2', tickId: `tick-${seq}`, marketSourceIdentity: identity, pageSessionId: 'page-a', connectionId: 'c1', sequence: seq,
+    sourceTimestampEpochMs: ts, receivedAtEpochMs: ts, receivedAtMonotonicMs: seq, eventTimestampEpochMs: ts, timestampBasis: 'SOURCE',
+    observedTimestampDeltaMs: 0, transportLatencyMs: null, price, integrity: 'VALID',
+  };
+}
+
+test('recovery derives pending work from append-only journal differences', async () => {
+  const journal = new MemoryJournal();
+  await journal.appendDecision(decision());
+  let state = await new RecoveryService(journal).derive();
+  assert.deepEqual(state.pendingEntries.map((item) => item.decisionId), ['d1']);
+  await journal.appendEntryResolution({
+    resolutionStatus: 'UNRESOLVED', entryResolutionSchemaVersion: '2', entryResolutionId: 'er1', decisionId: 'd1',
+    referenceEntryPrice: null, referenceEntryTimestamp: null, maxEntryResolutionDelayMs: 3000, unresolvedReason: 'ENTRY_TIMEOUT', resolvedAt: 5000,
+  });
+  state = await new RecoveryService(journal).derive();
+  assert.equal(state.pendingEntries.length, 0);
+  await journal.appendSignal(signal());
+  state = await new RecoveryService(journal).derive();
+  assert.deepEqual(state.pendingResults.map((item) => item.signalId), ['s1']);
+});
+
+test('resolved result cannot use UNRESOLVED outcomes and flat does not invent refund', () => {
+  const engine = new ResultEngine(5000);
+  const flat = engine.evaluateFromTick(signal(), tick(61_000, 10, 1));
+  assert.ok(flat && flat.resolutionStatus === 'RESOLVED');
+  assert.equal(flat.priceOutcome, 'FLAT');
+  assert.equal(flat.directionalOutcome, 'FLAT');
+  assert.equal(flat.economicOutcome, 'UNKNOWN');
+  assert.equal(flat.economicReturn, null);
+});
+
+test('replay uses the same quantitative pipeline and reproduces deterministic decision ids', async () => {
+  const journal = new MemoryJournal();
+  const config = { ...DEFAULT_PIPELINE_CONFIG, executionMode: 'LIVE' as const };
+  const pipeline = new QuantPipeline(journal, config);
+  await pipeline.initialize(1_700_000_000_000);
+  const start = 1_700_000_000_000;
+  const payout = { payoutSnapshotSchemaVersion: '1' as const, canonicalAssetId: 'EURUSDOTC', expirationSeconds: 60, payoutRate: 0.8, capturedAt: start, source: 'PLATFORM_PROTOCOL' as const, quality: 'VERIFIED' as const };
+  for (let index = 0; index < 150; index++) {
+    const ts = start + index * 1000;
+    const price = 1.1 + index * 0.00002 + Math.sin(index / 4) * 0.00005;
+    await pipeline.enqueue({ tick: tick(ts, price, index), payoutSnapshot: index === 0 ? payout : null });
+  }
+  await pipeline.drain();
+  const exporter = new DatasetExporter(journal);
+  const dataset = await exporter.create({ appVersion: '1.1.0', buildId: 'test', gitCommit: null, createdAt: start + 200_000 });
+  assert.ok(dataset.decisions.length > 0);
+  const replay = await new ReplayEngine().replay(dataset, config);
+  assert.deepEqual(replay.decisions.map((item) => item.decisionId), dataset.decisions.map((item) => item.decisionId));
+});

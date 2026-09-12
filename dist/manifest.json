@@ -1,25 +1,23 @@
 {
   "manifest_version": 3,
   "name": "OTC Elite Signal Engine",
-  "version": "1.0.0",
-  "description": "Laborat\u00f3rio quantitativo OTC",
+  "version": "1.1.0",
+  "description": "Signal-only quantitative laboratory for Pocket Option OTC reference-feed research",
   "permissions": [
     "storage",
-    "activeTab",
-    "scripting",
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "*://*.pocketoption.com/*"
+    "https://*.pocketoption.com/*"
   ],
   "background": {
-    "service_worker": "background.js",
+    "service_worker": "src/service-worker/core/background.js",
     "type": "module"
   },
   "content_scripts": [
     {
       "matches": [
-        "*://*.pocketoption.com/*"
+        "https://*.pocketoption.com/*"
       ],
       "js": [
         "content.js"
@@ -30,10 +28,13 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "pageBridge.js"
+        "src/main-world/page-bridge.js",
+        "src/common/protocol/pocket-option-parser.js",
+        "src/common/hashing/canonical-hash.js",
+        "src/common/hashing/sha256.js"
       ],
       "matches": [
-        "*://*.pocketoption.com/*"
+        "https://*.pocketoption.com/*"
       ]
     }
   ],

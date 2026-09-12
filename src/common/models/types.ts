@@ -1,51 +1,69 @@
-export type TimestampBasis = 'SOURCE_RECEIVED' | 'LOCAL_RECEIVED' | 'HYBRID';
-export type DataQuality = 'OPTIMAL' | 'DEGRADED' | 'INVALID';
+export type TimestampBasis = 'SOURCE' | 'LOCAL_RECEIPT';
+export type EventIntegrity = 'VALID' | 'SUSPECT' | 'INVALID';
+export type OperationalDataState = 'INITIALIZING' | 'WARMING_UP' | 'HEALTHY' | 'DEGRADED' | 'STALE' | 'DATA_UNAVAILABLE';
 export type SourceQuality = 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
-export type PriceSource = 'WS_BINARY' | 'WS_JSON' | 'DOM_OBSERVATION';
-export type EntryReferencePolicy = 'FIRST_TICK_AFTER_ALERT' | 'NEXT_CANDLE_OPEN';
-export type ExpiryPolicy = 'FIXED_DELAY_FROM_ENTRY' | 'FIXED_TIMESTAMP';
+export type PriceSource = 'POCKET_OPTION_WS_JSON';
 export type ExecutionMode = 'LIVE' | 'REPLAY';
-export type Timeframe = 'M1' | 'M5' | 'M15';
+export type EntryReferencePolicy = 'FIRST_TICK_AFTER_ALERT';
+export type ExpiryPolicy = 'FIXED_DELAY_FROM_ENTRY';
+export type Timeframe = '5s' | '10s' | '15s' | '30s' | '60s';
+export type StructureRegime = 'TREND_UP' | 'TREND_DOWN' | 'RANGE' | 'CHAOTIC' | 'UNKNOWN';
+export type VolatilityRegime = 'LOW' | 'NORMAL' | 'HIGH' | 'UNKNOWN';
 
 export interface MarketSourceIdentity {
-  marketSourceIdentitySchemaVersion: string;
+  marketSourceIdentitySchemaVersion: '2';
   platform: 'POCKET_OPTION';
-  asset: string;
+  canonicalAssetId: string;
   marketType: 'OTC';
   source: PriceSource;
   feedId: string | null;
-  instrumentId: string | null;
-  parserSchemaId: string | null;
+  instrumentId: string;
+  parserSchemaId: string;
 }
 
 export interface Tick {
-  tickSchemaVersion: string;
+  tickSchemaVersion: '2';
   tickId: string;
   marketSourceIdentity: MarketSourceIdentity;
   pageSessionId: string;
-  eventTimestamp: number;
-  price: number;
+  connectionId: string;
+  sequence: number;
+  sourceTimestampEpochMs: number | null;
+  receivedAtEpochMs: number;
+  receivedAtMonotonicMs: number;
+  eventTimestampEpochMs: number;
   timestampBasis: TimestampBasis;
+  observedTimestampDeltaMs: number | null;
+  transportLatencyMs: null;
+  price: number;
+  integrity: EventIntegrity;
 }
 
-export enum CandleLifecycle {
-  FORMING = 'FORMING',
-  CLOSED = 'CLOSED',
-  EMPTY_INTERVAL = 'EMPTY_INTERVAL'
-}
+export type CandleLifecycle = 'FORMING' | 'CLOSED' | 'EMPTY_INTERVAL';
+export type CandleQuality = 'CLEAN' | 'GAP_AFFECTED';
 
 export interface Candle {
-  candleSchemaVersion: string;
-  asset: string;
-  timeframe: string;
+  candleSchemaVersion: '2';
+  canonicalAssetId: string;
+  timeframe: Timeframe;
   startTimestamp: number;
   endTimestamp: number;
   lifecycle: CandleLifecycle;
-  gapAffected: boolean;
+  quality: CandleQuality;
   open: number | null;
   high: number | null;
   low: number | null;
   close: number | null;
   tickCount: number;
   timestampBasis: TimestampBasis;
+}
+
+export interface PayoutSnapshot {
+  payoutSnapshotSchemaVersion: '1';
+  canonicalAssetId: string;
+  expirationSeconds: number;
+  payoutRate: number | null;
+  capturedAt: number;
+  source: 'PLATFORM_PROTOCOL' | 'PLATFORM_DOM' | 'UNKNOWN';
+  quality: 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
 }

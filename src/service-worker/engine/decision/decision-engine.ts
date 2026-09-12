@@ -1,108 +1,118 @@
-import { Candle } from '../../../common/models/types';
-import { DecisionRecord } from '../../../common/models/journal-types';
-import { canonicalEntityHash } from '../../../common/hashing/canonical-hash';
-import { FeatureExtractor } from './feature-extractor';
-import { RegimeAnalyzer } from './regime-analyzer';
-import { EvidenceEvaluator } from './evidence-evaluator';
-
-import { ExecutionMode } from '../../../common/models/types';
+import { canonicalEntityHash } from '../../../common/hashing/canonical-hash.js';
+import type {
+  DecisionRecord,
+  EvaluationWindow,
+  FeatureSnapshot,
+  MarketRegimeSnapshot,
+} from '../../../common/models/journal-types.js';
+import type { EventIntegrity, ExecutionMode, OperationalDataState, SourceQuality, Timeframe } from '../../../common/models/types.js';
+import { EvidenceAggregator } from './evidence-aggregator.js';
+import { StrategySelector } from './strategies.js';
 
 export interface DecisionEngineConfig {
   executionMode: ExecutionMode;
   appVersion: string;
   configHash: string;
   configSnapshot: Record<string, unknown>;
-  expirationSeconds: number; // Ex: 60 (1 minuto)
-  probabilityThreshold: number; // Ex: 0.70
+  expirationSeconds: number;
+  minModelScore: number;
+}
+
+export interface DecisionInput {
+  canonicalAssetId: string;
+  timeframe: Timeframe;
+  candleStartTimestamp: number;
+  candleEndTimestamp: number;
+  computedAt: number;
+  features: FeatureSnapshot | null;
+  regime: MarketRegimeSnapshot;
+  eventIntegrity: EventIntegrity;
+  operationalDataState: OperationalDataState;
+  sourceQuality: SourceQuality;
 }
 
 export class DecisionEngine {
-  private featureExtractor = new FeatureExtractor();
-  private regimeAnalyzer = new RegimeAnalyzer();
-  private evidenceEvaluator = new EvidenceEvaluator();
+  private readonly selector = new StrategySelector();
+  private readonly aggregator = new EvidenceAggregator();
 
-  constructor(private readonly config: DecisionEngineConfig) {}
+  public constructor(private readonly config: DecisionEngineConfig) {}
 
-  public evaluateCandle(candle: Candle, nowMs: number, dataQuality: 'OPTIMAL' | 'DEGRADED'): DecisionRecord {
-    const features = this.featureExtractor.extract(candle, nowMs);
-    const regime = this.regimeAnalyzer.analyze(features, nowMs);
-    const evidence = this.evidenceEvaluator.evaluate(features, regime, nowMs);
-
-    let finalDecision: 'CALL' | 'PUT' | 'BLOCKED' = 'BLOCKED';
-    let blockers = [...evidence.blockers];
-
-    // Data Quality Blocker
-    if (dataQuality === 'DEGRADED') {
-      blockers.push('DATA_QUALITY_DEGRADED');
-    }
-
-    // Threshold Blocker
-    if (evidence.calibratedProbability < this.config.probabilityThreshold) {
-      blockers.push('BELOW_PROBABILITY_THRESHOLD');
-    }
-
-    // Direction Mapping
-    if (blockers.length === 0) {
-      if (evidence.combinedDirection === 'CALL') finalDecision = 'CALL';
-      else if (evidence.combinedDirection === 'PUT') finalDecision = 'PUT';
-      else blockers.push('INVALID_EVIDENCE_DIRECTION');
-    }
-
-    // Se houve algum blocker tardio
-    if (blockers.length > 0) {
-      finalDecision = 'BLOCKED';
-    }
-
-    // Candidate direction is what the model thought, regardless of blockers
-    const candidateDirection: 'CALL' | 'PUT' | null =
-      (evidence.combinedDirection === 'CALL' || evidence.combinedDirection === 'PUT')
-        ? evidence.combinedDirection
-        : null;
-
-    // Geração determinística do decisionId
-    const decisionId = canonicalEntityHash('DECISION', 1, {
-      asset: candle.asset,
-      candleStartTimestamp: candle.startTimestamp,
-      nowMs,
-      evidenceCombinedScore: evidence.snapshot.combinedScore ?? 0
+  public evaluate(input: DecisionInput): DecisionRecord {
+    const evaluationWindow = this.evaluationWindow(input);
+    const blockers: string[] = [];
+    if (input.features === null) blockers.push('CORE_WARMUP');
+    if (input.eventIntegrity !== 'VALID') blockers.push('EVENT_INTEGRITY');
+    if (input.sourceQuality !== 'VERIFIED') blockers.push('UNVERIFIED_SOURCE_SCHEMA');
+    if (input.operationalDataState !== 'HEALTHY') blockers.push(`DATA_STATE_${input.operationalDataState}`);
+    if (input.regime.structure === 'CHAOTIC') blockers.push('CHAOTIC_REGIME');
+    if (input.regime.structure === 'UNKNOWN' || input.regime.volatility === 'UNKNOWN') blockers.push('UNKNOWN_REGIME');
+    const strategySnapshots = input.features ? this.selector.evaluate(input.features, input.regime) : [];
+    const evidenceSnapshot = input.features ? this.aggregator.aggregate(strategySnapshots) : null;
+    const candidateDirection = evidenceSnapshot?.dominantDirection ?? null;
+    if (!candidateDirection) blockers.push('NO_DOMINANT_DIRECTION');
+    if ((evidenceSnapshot?.modelScore ?? 0) < this.config.minModelScore) blockers.push('BELOW_MODEL_SCORE_THRESHOLD');
+    const finalDecision = blockers.length > 0
+      ? input.operationalDataState === 'DATA_UNAVAILABLE' || input.operationalDataState === 'STALE' ? 'DATA_UNAVAILABLE' : 'NO_TRADE'
+      : candidateDirection ?? 'NO_TRADE';
+    const granularityPayload = {
+      evaluationWindowId: evaluationWindow.evaluationWindowId,
+      strategyGroupId: 'CORE_STRATEGIES_V1',
+      expirationSeconds: this.config.expirationSeconds,
+      configHash: this.config.configHash,
+    };
+    const decisionGranularityKey = canonicalEntityHash('DECISION_GRANULARITY', 1, granularityPayload);
+    const decisionId = canonicalEntityHash('DECISION', 2, {
+      decisionGranularityKey,
+      finalDecision,
+      candidateDirection,
+      modelScore: evidenceSnapshot?.modelScore ?? null,
+      informationCutoffTimestamp: input.features?.informationCutoffTimestamp ?? input.candleEndTimestamp,
     });
-
-    const record: DecisionRecord = {
-      decisionSchemaVersion: '1',
+    const publishedAt = input.computedAt;
+    return {
+      decisionSchemaVersion: '2',
       decisionId,
+      decisionGranularityKey,
       executionMode: this.config.executionMode,
-      asset: candle.asset,
-      decisionComputedAt: nowMs,
-      decisionPublishedAt: nowMs,
-      alertPublishedAt: finalDecision === 'CALL' || finalDecision === 'PUT' ? nowMs : null,
-      evaluationWindowId: `ew_${candle.startTimestamp}`, // Agrupa por candle start
-      candleStartTimestamp: candle.startTimestamp,
-
+      canonicalAssetId: input.canonicalAssetId,
+      timeframe: input.timeframe,
+      decisionComputedAt: input.computedAt,
+      decisionPublishedAt: publishedAt,
+      alertPublishedAt: finalDecision === 'CALL' || finalDecision === 'PUT' ? publishedAt : null,
+      evaluationWindowId: evaluationWindow.evaluationWindowId,
+      candleStartTimestamp: input.candleStartTimestamp,
       candidateDirection,
       finalDecision,
-      modelScore: evidence.snapshot.combinedScore,
-      calibratedProbability: evidence.calibratedProbability,
-
-      structureRegime: regime.structure,
-      volatilityRegime: regime.volatility,
-
-      strategySnapshots: null,
-      featureSnapshot: features,
-      regimeSnapshot: regime,
-      evidenceSnapshot: evidence.snapshot,
-
-      sourceQuality: 'VERIFIED', // Pode vir do CandleBuilder depois
+      modelScore: evidenceSnapshot?.modelScore ?? null,
+      calibratedProbability: null,
+      structureRegime: input.regime.structure,
+      volatilityRegime: input.regime.volatility,
+      strategySnapshots,
+      featureSnapshot: input.features,
+      evidenceSnapshot,
+      sourceQuality: input.sourceQuality,
+      eventIntegrity: input.eventIntegrity,
+      operationalDataState: input.operationalDataState,
       blockers,
-      dataQuality,
-
       expirationSeconds: this.config.expirationSeconds,
       configHash: this.config.configHash,
       configSnapshot: this.config.configSnapshot,
       appVersion: this.config.appVersion,
-      marketEpisodeId: null, // Futuro
-      createdAt: nowMs
+      marketEpisodeId: null,
+      createdAt: input.computedAt,
     };
+  }
 
-    return record;
+  private evaluationWindow(input: DecisionInput): EvaluationWindow {
+    const payload = {
+      canonicalAssetId: input.canonicalAssetId,
+      timeframe: input.timeframe,
+      candleStartTimestamp: input.candleStartTimestamp,
+      windowStartTimestamp: input.candleStartTimestamp,
+      windowEndTimestamp: input.candleEndTimestamp,
+      expirationSeconds: this.config.expirationSeconds,
+      configHash: this.config.configHash,
+    };
+    return { evaluationWindowId: canonicalEntityHash('EVALUATION_WINDOW', 1, payload), ...payload };
   }
 }
