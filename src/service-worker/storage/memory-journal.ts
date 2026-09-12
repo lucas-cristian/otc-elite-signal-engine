@@ -20,7 +20,7 @@ export class MemoryJournal implements JournalRepository {
   private readonly results = new Map<string, ResultRecord>();
 
   public async appendTick(value: Tick): Promise<void> { this.append(this.ticks, value.tickId, value); }
-  public async appendPayoutSnapshot(value: PayoutSnapshot): Promise<void> { this.append(this.payouts, `${value.canonicalAssetId}:${value.expirationSeconds}:${value.capturedAt}`, value); }
+  public async appendPayoutSnapshot(value: PayoutSnapshot): Promise<void> { this.append(this.payouts, `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`, value); }
   public async appendCandle(value: Candle): Promise<void> { this.append(this.candles, this.candleKey(value), value); }
   public async appendDecision(value: DecisionRecord): Promise<void> { this.append(this.decisions, value.decisionId, value); }
   public async appendEntryResolution(value: EntryResolutionRecord): Promise<void> { this.append(this.entries, value.decisionId, value); }

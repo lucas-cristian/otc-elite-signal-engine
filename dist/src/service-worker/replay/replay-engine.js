@@ -10,18 +10,15 @@ export class ReplayEngine {
         const pipeline = new QuantPipeline(journal, { ...config, executionMode: 'REPLAY' });
         const firstTimestamp = dataset.ticks[0]?.receivedAtEpochMs ?? dataset.manifest.createdAt;
         await pipeline.initialize(firstTimestamp);
-        const payouts = [...dataset.payoutSnapshots].sort((a, b) => a.capturedAt - b.capturedAt);
-        const latestByAsset = new Map();
-        let payoutIndex = 0;
-        const ticks = [...dataset.ticks].sort((a, b) => a.receivedAtEpochMs - b.receivedAtEpochMs || a.sequence - b.sequence);
-        for (const tick of ticks) {
-            while (payoutIndex < payouts.length && (payouts[payoutIndex]?.capturedAt ?? Infinity) <= tick.receivedAtEpochMs) {
-                const payout = payouts[payoutIndex];
-                if (payout)
-                    latestByAsset.set(payout.canonicalAssetId, payout);
-                payoutIndex += 1;
-            }
-            await pipeline.enqueue({ tick, payoutSnapshot: latestByAsset.get(tick.marketSourceIdentity.canonicalAssetId) ?? null });
+        const items = [
+            ...dataset.payoutSnapshots.map((payout) => ({ type: 'PAYOUT', timestamp: payout.capturedAt, payout })),
+            ...dataset.ticks.map((tick) => ({ type: 'TICK', timestamp: tick.receivedAtEpochMs, tick })),
+        ].sort((a, b) => a.timestamp - b.timestamp || (a.type === 'PAYOUT' ? -1 : 1));
+        for (const item of items) {
+            if (item.type === 'PAYOUT')
+                await pipeline.enqueuePayout(item.payout);
+            else
+                await pipeline.enqueue({ tick: item.tick });
         }
         await pipeline.drain();
         return new DatasetExporter(journal).create({

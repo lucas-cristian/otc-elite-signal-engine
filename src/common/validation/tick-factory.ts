@@ -4,11 +4,12 @@ import type { Tick } from '../models/types.js';
 
 export function createValidatedTick(event: SemanticPriceEvent, pageSessionId: string): Tick {
   const sourceTimestamp = event.sourceTimestampEpochMs;
-  const eventTimestampEpochMs = sourceTimestamp ?? event.receivedAtEpochMs;
   const observedTimestampDeltaMs = sourceTimestamp === null ? null : event.receivedAtEpochMs - sourceTimestamp;
-  const integrity = observedTimestampDeltaMs !== null && Math.abs(observedTimestampDeltaMs) > 60_000 ? 'SUSPECT' : 'VALID';
-  const timestampBasis = sourceTimestamp === null ? 'LOCAL_RECEIPT' : 'SOURCE';
-  const tickId = canonicalEntityHash('TICK', 2, {
+  const useSourceClock = event.sourceClockSynchronized && sourceTimestamp !== null;
+  const eventTimestampEpochMs = useSourceClock ? sourceTimestamp : event.receivedAtEpochMs;
+  const timestampBasis = useSourceClock ? 'SOURCE' : 'LOCAL_RECEIPT';
+  const integrity = useSourceClock && observedTimestampDeltaMs !== null && Math.abs(observedTimestampDeltaMs) > 60_000 ? 'SUSPECT' : 'VALID';
+  const tickId = canonicalEntityHash('TICK', 3, {
     identity: event.identity,
     pageSessionId,
     connectionId: event.connectionId,
@@ -18,7 +19,7 @@ export function createValidatedTick(event: SemanticPriceEvent, pageSessionId: st
     price: event.price,
   });
   return {
-    tickSchemaVersion: '2',
+    tickSchemaVersion: '3',
     tickId,
     marketSourceIdentity: event.identity,
     pageSessionId,
@@ -29,9 +30,11 @@ export function createValidatedTick(event: SemanticPriceEvent, pageSessionId: st
     receivedAtMonotonicMs: event.receivedAtMonotonicMs,
     eventTimestampEpochMs,
     timestampBasis,
+    sourceClockSynchronized: event.sourceClockSynchronized,
     observedTimestampDeltaMs,
     transportLatencyMs: null,
     price: event.price,
     integrity,
+    sourceQuality: event.sourceQuality,
   };
 }

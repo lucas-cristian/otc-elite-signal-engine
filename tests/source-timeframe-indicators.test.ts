@@ -11,16 +11,16 @@ function identity(overrides: Partial<MarketSourceIdentity> = {}): MarketSourceId
     platform: 'POCKET_OPTION',
     canonicalAssetId: 'EURUSDOTC',
     marketType: 'OTC',
-    source: 'POCKET_OPTION_WS_JSON',
-    feedId: null,
+    source: 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON',
+    feedId: 'demo-api-eu.po.market',
     instrumentId: 'EURUSD_otc',
-    parserSchemaId: 'POCKET_OPTION_SOCKETIO_DIRECT_V1',
+    parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1',
     ...overrides,
   };
 }
 
 test('market source compatibility fails closed on asymmetric critical identity', () => {
-  assert.deepEqual(isCompatibleMarketSource(identity({ feedId: 'feed-a' }), identity()), { compatible: false, reason: 'INSUFFICIENT_IDENTITY' });
+  assert.deepEqual(isCompatibleMarketSource(identity({ feedId: 'api-us-north.po.market' }), identity()), { compatible: false, reason: 'FEED_MISMATCH' });
   assert.deepEqual(isCompatibleMarketSource(identity(), identity({ instrumentId: 'GBPUSD_otc' })), { compatible: false, reason: 'INSTRUMENT_MISMATCH' });
   assert.deepEqual(isCompatibleMarketSource(identity(), identity()), { compatible: true, reason: 'MATCH' });
 });

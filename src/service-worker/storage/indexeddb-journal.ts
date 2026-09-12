@@ -30,7 +30,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 
 export async function openJournalDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('otc-elite-signal-engine', 2);
+    const request = indexedDB.open('otc-elite-signal-engine', 3);
     request.onupgradeneeded = () => {
       const db = request.result;
       for (const name of Array.from(db.objectStoreNames)) db.deleteObjectStore(name);
@@ -52,7 +52,7 @@ export class IndexedDbJournal implements JournalRepository {
   public constructor(private readonly db: IDBDatabase) {}
 
   public appendTick(value: Tick): Promise<void> { return this.appendImmutable('ticks', value.tickId, value); }
-  public appendPayoutSnapshot(value: PayoutSnapshot): Promise<void> { const key = `${value.canonicalAssetId}:${value.expirationSeconds}:${value.capturedAt}`; return this.appendImmutable('payoutSnapshots', key, { key, payout: value }); }
+  public appendPayoutSnapshot(value: PayoutSnapshot): Promise<void> { const key = `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`; return this.appendImmutable('payoutSnapshots', key, { key, payout: value }); }
   public appendCandle(value: Candle): Promise<void> {
     const key = `${value.canonicalAssetId}:${value.timeframe}:${value.startTimestamp}:${value.lifecycle}`;
     return this.appendImmutable('candles', key, { key, candle: value });

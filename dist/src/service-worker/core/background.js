@@ -1,4 +1,4 @@
-import { isSemanticPriceEvent } from '../../common/validation/semantic-event-validator.js';
+import { isSemanticPayoutEvent, isSemanticPriceEvent } from '../../common/validation/semantic-event-validator.js';
 import { createValidatedTick } from '../../common/validation/tick-factory.js';
 import { computeAnalytics } from '../evaluation/analytics.js';
 import { DatasetExporter } from '../export/dataset-exporter.js';
@@ -8,8 +8,7 @@ const discoveryRing = [];
 const runtime = (async () => {
     const db = await openJournalDatabase();
     const journal = new IndexedDbJournal(db);
-    const settings = await chrome.storage.local.get(['protocolSchemaVerified']);
-    const pipeline = new QuantPipeline(journal, { ...DEFAULT_PIPELINE_CONFIG, protocolSchemaVerified: settings.protocolSchemaVerified === true });
+    const pipeline = new QuantPipeline(journal, DEFAULT_PIPELINE_CONFIG);
     await pipeline.initialize(Date.now());
     return { journal, pipeline };
 })();
@@ -35,12 +34,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                 if (typeof item !== 'object' || item === null)
                     continue;
                 const envelope = item;
-                if (typeof envelope.pageSessionId !== 'string' || !isSemanticPriceEvent(envelope.event))
+                if (typeof envelope.pageSessionId !== 'string')
                     continue;
-                const tick = createValidatedTick(envelope.event, envelope.pageSessionId);
-                if (tick.integrity !== 'VALID')
+                if (isSemanticPriceEvent(envelope.event)) {
+                    const tick = createValidatedTick(envelope.event, envelope.pageSessionId);
+                    if (tick.integrity !== 'VALID')
+                        continue;
+                    await pipeline.enqueue({ tick });
                     continue;
-                await pipeline.enqueue({ tick, payoutSnapshot: envelope.event.payoutSnapshot });
+                }
+                if (isSemanticPayoutEvent(envelope.event))
+                    await pipeline.enqueuePayout(envelope.event.payoutSnapshot);
             }
             await pipeline.drain();
             sendResponse({ ok: true });
@@ -69,7 +73,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         void runtime.then(async ({ journal, pipeline }) => {
             await pipeline.drain();
             const exporter = new DatasetExporter(journal);
-            const dataset = await exporter.create({ appVersion: '1.1.0', buildId: 'local-tsc', gitCommit: null, createdAt: Date.now() });
+            const dataset = await exporter.create({ appVersion: '1.2.0', buildId: 'local-tsc', gitCommit: null, createdAt: Date.now() });
             sendResponse({ filename: `otc-elite-dataset-${dataset.manifest.datasetId.slice(0, 12)}.json`, json: JSON.stringify(dataset, null, 2) });
         }).catch((error) => sendResponse({ error: error instanceof Error ? error.message : 'export failure' }));
         return true;

@@ -11,7 +11,7 @@ import { ReplayEngine } from '../src/service-worker/replay/replay-engine.js';
 
 const source: MarketSourceIdentity = {
   marketSourceIdentitySchemaVersion: '2', platform: 'POCKET_OPTION', canonicalAssetId: 'EURUSDOTC', marketType: 'OTC',
-  source: 'POCKET_OPTION_WS_JSON', feedId: null, instrumentId: 'EURUSD_otc', parserSchemaId: 'POCKET_OPTION_SOCKETIO_DIRECT_V1',
+  source: 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON', feedId: 'demo-api-eu.po.market', instrumentId: 'EURUSD_otc', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1',
 };
 
 function decision(): DecisionRecord {
@@ -28,15 +28,18 @@ function signal(): SignalRecord {
   return {
     signalSchemaVersion: '2', signalId: 's1', signalFingerprint: 'f1', decisionId: 'd1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', direction: 'CALL',
     referenceEntryPrice: 10, referenceEntryTimestamp: 1000, expirationSeconds: 60, expectedExpiryTimestamp: 61_000, entryMarketSourceIdentity: source,
-    entryPageSessionId: 'page-a', payoutSnapshot: { payoutSnapshotSchemaVersion: '1', canonicalAssetId: 'EURUSDOTC', expirationSeconds: 60, payoutRate: 0.8, capturedAt: 900, source: 'PLATFORM_PROTOCOL', quality: 'VERIFIED' }, signalCreatedAt: 1000,
+    entryPageSessionId: 'page-a', payoutSnapshot: {
+      payoutSnapshotSchemaVersion: '2', canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, payoutRate: 0.8, capturedAt: 900,
+      source: 'PLATFORM_PROTOCOL', quality: 'VERIFIED', feedId: 'demo-api-eu.po.market', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1',
+    }, signalCreatedAt: 1000,
   };
 }
 
 function tick(ts: number, price: number, seq: number, identity = source): Tick {
   return {
-    tickSchemaVersion: '2', tickId: `tick-${seq}`, marketSourceIdentity: identity, pageSessionId: 'page-a', connectionId: 'c1', sequence: seq,
-    sourceTimestampEpochMs: ts, receivedAtEpochMs: ts, receivedAtMonotonicMs: seq, eventTimestampEpochMs: ts, timestampBasis: 'SOURCE',
-    observedTimestampDeltaMs: 0, transportLatencyMs: null, price, integrity: 'VALID',
+    tickSchemaVersion: '3', tickId: `tick-${seq}`, marketSourceIdentity: identity, pageSessionId: 'page-a', connectionId: 'c1', sequence: seq,
+    sourceTimestampEpochMs: ts + 7_200_000, receivedAtEpochMs: ts, receivedAtMonotonicMs: seq, eventTimestampEpochMs: ts, timestampBasis: 'LOCAL_RECEIPT',
+    sourceClockSynchronized: false, observedTimestampDeltaMs: -7_200_000, transportLatencyMs: null, price, integrity: 'VALID', sourceQuality: 'VERIFIED',
   };
 }
 
@@ -66,22 +69,28 @@ test('resolved result cannot use UNRESOLVED outcomes and flat does not invent re
   assert.equal(flat.economicReturn, null);
 });
 
-test('replay uses the same quantitative pipeline and reproduces deterministic decision ids', async () => {
+test('replay interleaves payout events and ticks through the same quantitative pipeline', async () => {
   const journal = new MemoryJournal();
   const config = { ...DEFAULT_PIPELINE_CONFIG, executionMode: 'LIVE' as const };
   const pipeline = new QuantPipeline(journal, config);
   await pipeline.initialize(1_700_000_000_000);
   const start = 1_700_000_000_000;
-  const payout = { payoutSnapshotSchemaVersion: '1' as const, canonicalAssetId: 'EURUSDOTC', expirationSeconds: 60, payoutRate: 0.8, capturedAt: start, source: 'PLATFORM_PROTOCOL' as const, quality: 'VERIFIED' as const };
+  const payout = {
+    payoutSnapshotSchemaVersion: '2' as const, canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, payoutRate: 0.8, capturedAt: start,
+    source: 'PLATFORM_PROTOCOL' as const, quality: 'VERIFIED' as const, feedId: 'demo-api-eu.po.market', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1',
+  };
+  await pipeline.enqueuePayout(payout);
   for (let index = 0; index < 150; index++) {
     const ts = start + index * 1000;
     const price = 1.1 + index * 0.00002 + Math.sin(index / 4) * 0.00005;
-    await pipeline.enqueue({ tick: tick(ts, price, index), payoutSnapshot: index === 0 ? payout : null });
+    await pipeline.enqueue({ tick: tick(ts, price, index) });
   }
   await pipeline.drain();
   const exporter = new DatasetExporter(journal);
-  const dataset = await exporter.create({ appVersion: '1.1.0', buildId: 'test', gitCommit: null, createdAt: start + 200_000 });
+  const dataset = await exporter.create({ appVersion: '1.2.0', buildId: 'test', gitCommit: null, createdAt: start + 200_000 });
   assert.ok(dataset.decisions.length > 0);
+  assert.equal(dataset.payoutSnapshots.length, 1);
   const replay = await new ReplayEngine().replay(dataset, config);
   assert.deepEqual(replay.decisions.map((item) => item.decisionId), dataset.decisions.map((item) => item.decisionId));
+  assert.deepEqual(replay.payoutSnapshots, dataset.payoutSnapshots);
 });

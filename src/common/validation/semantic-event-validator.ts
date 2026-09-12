@@ -1,26 +1,58 @@
-import type { SemanticPriceEvent } from '../protocol/market-events.js';
+import type { SemanticPayoutEvent, SemanticPriceEvent } from '../protocol/market-events.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isSourceQuality(value: unknown): boolean {
+  return value === 'VERIFIED' || value === 'INFERRED' || value === 'UNKNOWN';
+}
 
 export function isSemanticPriceEvent(value: unknown): value is SemanticPriceEvent {
-  if (typeof value !== 'object' || value === null) return false;
-  const event = value as Record<string, unknown>;
-  if (event.type !== 'SEMANTIC_PRICE') return false;
-  if (typeof event.connectionId !== 'string' || event.connectionId.length === 0) return false;
-  if (!Number.isInteger(event.sequence) || (event.sequence as number) < 0) return false;
-  if (typeof event.price !== 'number' || !Number.isFinite(event.price) || event.price <= 0) return false;
-  if (event.sourceTimestampEpochMs !== null && (typeof event.sourceTimestampEpochMs !== 'number' || !Number.isFinite(event.sourceTimestampEpochMs))) return false;
-  if (typeof event.receivedAtEpochMs !== 'number' || !Number.isFinite(event.receivedAtEpochMs)) return false;
-  if (typeof event.receivedAtMonotonicMs !== 'number' || !Number.isFinite(event.receivedAtMonotonicMs)) return false;
-  if (typeof event.identity !== 'object' || event.identity === null) return false;
-  const identity = event.identity as Record<string, unknown>;
+  if (!isRecord(value) || value.type !== 'SEMANTIC_PRICE') return false;
+  if (typeof value.connectionId !== 'string' || value.connectionId.length === 0) return false;
+  if (!Number.isInteger(value.sequence) || (value.sequence as number) < 0) return false;
+  if (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price <= 0) return false;
+  if (value.sourceTimestampEpochMs !== null && (typeof value.sourceTimestampEpochMs !== 'number' || !Number.isFinite(value.sourceTimestampEpochMs))) return false;
+  if (typeof value.sourceClockSynchronized !== 'boolean' || !isSourceQuality(value.sourceQuality)) return false;
+  if (typeof value.receivedAtEpochMs !== 'number' || !Number.isFinite(value.receivedAtEpochMs)) return false;
+  if (typeof value.receivedAtMonotonicMs !== 'number' || !Number.isFinite(value.receivedAtMonotonicMs)) return false;
+  if (!isRecord(value.identity)) return false;
+  const identity = value.identity;
   return identity.marketSourceIdentitySchemaVersion === '2'
     && identity.platform === 'POCKET_OPTION'
     && typeof identity.canonicalAssetId === 'string'
     && identity.canonicalAssetId.length > 0
     && identity.marketType === 'OTC'
-    && identity.source === 'POCKET_OPTION_WS_JSON'
+    && identity.source === 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON'
     && typeof identity.instrumentId === 'string'
-    && identity.instrumentId.length > 0
+    && identity.instrumentId.toLowerCase().endsWith('_otc')
     && typeof identity.parserSchemaId === 'string'
     && identity.parserSchemaId.length > 0
-    && (identity.feedId === null || typeof identity.feedId === 'string');
+    && typeof identity.feedId === 'string'
+    && identity.feedId.endsWith('.po.market');
+}
+
+export function isSemanticPayoutEvent(value: unknown): value is SemanticPayoutEvent {
+  if (!isRecord(value) || value.type !== 'SEMANTIC_PAYOUT') return false;
+  if (typeof value.connectionId !== 'string' || value.connectionId.length === 0) return false;
+  if (!Number.isInteger(value.sequence) || (value.sequence as number) < 0) return false;
+  if (!isRecord(value.payoutSnapshot)) return false;
+  const payout = value.payoutSnapshot;
+  return payout.payoutSnapshotSchemaVersion === '2'
+    && typeof payout.canonicalAssetId === 'string'
+    && payout.canonicalAssetId.length > 0
+    && payout.expirationSeconds === null
+    && typeof payout.payoutRate === 'number'
+    && Number.isFinite(payout.payoutRate)
+    && payout.payoutRate >= 0
+    && payout.payoutRate <= 1
+    && typeof payout.capturedAt === 'number'
+    && Number.isFinite(payout.capturedAt)
+    && payout.source === 'PLATFORM_PROTOCOL'
+    && isSourceQuality(payout.quality)
+    && typeof payout.feedId === 'string'
+    && payout.feedId.endsWith('.po.market')
+    && typeof payout.parserSchemaId === 'string'
+    && payout.parserSchemaId.length > 0;
 }

@@ -1,4 +1,4 @@
-import { extractSocketIoEventName, parsePocketOptionProductionFrame } from '../common/protocol/pocket-option-parser.js';
+import { extractSocketIoEventName, isPocketOptionMarketWebSocketUrl, PocketOptionSocketIoDecoder, } from '../common/protocol/pocket-option-parser.js';
 const BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
 const CONTROL_SOURCE = 'OTC_ELITE_ISOLATED_CONTROL_V2';
 function setupPageBridge() {
@@ -18,6 +18,10 @@ function setupPageBridge() {
             socketIoEventName = extractSocketIoEventName(data);
         }
         else if (data instanceof ArrayBuffer) {
+            payloadType = 'BINARY';
+            byteLength = data.byteLength;
+        }
+        else if (ArrayBuffer.isView(data)) {
             payloadType = 'BINARY';
             byteLength = data.byteLength;
         }
@@ -42,41 +46,41 @@ function setupPageBridge() {
     });
     class InterceptedWebSocket extends OriginalWebSocket {
         connectionId;
-        nextSequence = 0;
+        observed;
+        decoder;
+        inboundQueue = Promise.resolve();
         constructor(url, protocols) {
             super(url, protocols);
+            const endpointUrl = String(url);
             this.connectionId = `ws-${++connectionCounter}`;
+            this.observed = isPocketOptionMarketWebSocketUrl(endpointUrl);
+            this.decoder = new PocketOptionSocketIoDecoder(this.connectionId, endpointUrl);
+            if (!this.observed)
+                return;
             this.addEventListener('open', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'OPEN', receivedAtEpochMs: Date.now() }));
             this.addEventListener('close', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'CLOSE', receivedAtEpochMs: Date.now() }));
             this.addEventListener('error', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'ERROR', receivedAtEpochMs: Date.now() }));
-            this.addEventListener('message', (event) => this.processInbound(event.data));
+            this.addEventListener('message', (event) => {
+                const timing = { receivedAtEpochMs: Date.now(), receivedAtMonotonicMs: performance.now() };
+                const data = event.data;
+                this.inboundQueue = this.inboundQueue
+                    .then(() => this.processInbound(data, timing))
+                    .catch(() => undefined);
+            });
         }
         send(data) {
-            if (mode === 'PROTOCOL_DISCOVERY')
+            if (this.observed && mode === 'PROTOCOL_DISCOVERY')
                 emit(discoveryObservation(this.connectionId, 'OUTBOUND', data, Date.now()));
             super.send(data);
         }
-        processInbound(data) {
-            const receivedAtEpochMs = Date.now();
-            const receivedAtMonotonicMs = performance.now();
-            const sequence = this.nextSequence++;
+        async processInbound(data, timing) {
             if (mode === 'PROTOCOL_DISCOVERY') {
-                emit(discoveryObservation(this.connectionId, 'INBOUND', data, receivedAtEpochMs));
+                emit(discoveryObservation(this.connectionId, 'INBOUND', data, timing.receivedAtEpochMs));
                 return;
             }
-            if (typeof data === 'string') {
-                const parsed = parsePocketOptionProductionFrame(data, { connectionId: this.connectionId, sequence, receivedAtEpochMs, receivedAtMonotonicMs });
-                if (parsed)
-                    emit(parsed);
-                return;
-            }
-            if (data instanceof Blob) {
-                void data.text().then((text) => {
-                    const parsed = parsePocketOptionProductionFrame(text, { connectionId: this.connectionId, sequence, receivedAtEpochMs, receivedAtMonotonicMs });
-                    if (parsed)
-                        emit(parsed);
-                });
-            }
+            const events = await this.decoder.ingest(data, timing);
+            for (const event of events)
+                emit(event);
         }
     }
     window.WebSocket = InterceptedWebSocket;

@@ -7,4 +7,4 @@ mkdirSync('dist', { recursive: true });
 cpSync('public/manifest.json', 'dist/manifest.json');
 cpSync('src/ui/popup/index.html', 'dist/src/ui/popup/index.html');
 cpSync('src/ui/dashboard/index.html', 'dist/src/ui/dashboard/index.html');
-writeFileSync('dist/build-metadata.json', JSON.stringify({ appVersion: '1.1.0', buildSystem: 'tsc' }, null, 2));
+writeFileSync('dist/build-metadata.json', JSON.stringify({ appVersion: '1.2.0', buildSystem: 'tsc' }, null, 2));

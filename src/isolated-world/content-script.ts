@@ -21,17 +21,41 @@ function otcIsDiscoveryObservation(value: unknown): value is Record<string, unkn
     && typeof value.byteLength === 'number';
 }
 
+function otcHasSemanticEnvelope(value: Record<string, unknown>): boolean {
+  return typeof value.connectionId === 'string'
+    && Number.isInteger(value.sequence)
+    && (value.sequence as number) >= 0;
+}
+
 function otcIsSemanticPriceEvent(value: unknown): value is Record<string, unknown> {
-  if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PRICE') return false;
-  if (typeof value.connectionId !== 'string' || !Number.isInteger(value.sequence)) return false;
+  if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PRICE' || !otcHasSemanticEnvelope(value)) return false;
   if (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price <= 0) return false;
   if (typeof value.receivedAtEpochMs !== 'number' || typeof value.receivedAtMonotonicMs !== 'number') return false;
+  if (typeof value.sourceClockSynchronized !== 'boolean') return false;
+  if (value.sourceQuality !== 'VERIFIED' && value.sourceQuality !== 'INFERRED' && value.sourceQuality !== 'UNKNOWN') return false;
   if (!otcIsRecord(value.identity)) return false;
   return value.identity.platform === 'POCKET_OPTION'
     && value.identity.marketType === 'OTC'
+    && value.identity.source === 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON'
     && typeof value.identity.canonicalAssetId === 'string'
     && typeof value.identity.instrumentId === 'string'
+    && typeof value.identity.feedId === 'string'
     && typeof value.identity.parserSchemaId === 'string';
+}
+
+function otcIsSemanticPayoutEvent(value: unknown): value is Record<string, unknown> {
+  if (!otcIsRecord(value) || value.type !== 'SEMANTIC_PAYOUT' || !otcHasSemanticEnvelope(value)) return false;
+  if (!otcIsRecord(value.payoutSnapshot)) return false;
+  const payout = value.payoutSnapshot;
+  return payout.payoutSnapshotSchemaVersion === '2'
+    && typeof payout.canonicalAssetId === 'string'
+    && typeof payout.payoutRate === 'number'
+    && Number.isFinite(payout.payoutRate)
+    && payout.payoutRate >= 0
+    && payout.payoutRate <= 1
+    && typeof payout.capturedAt === 'number'
+    && typeof payout.feedId === 'string'
+    && typeof payout.parserSchemaId === 'string';
 }
 
 function otcScheduleFlush(): void {
@@ -72,20 +96,21 @@ window.addEventListener('message', (messageEvent: MessageEvent<unknown>) => {
     else otcConnections.delete(connectionId);
     return;
   }
-  if (otcIsSemanticPriceEvent(payload)) {
+  if (otcIsSemanticPriceEvent(payload) || otcIsSemanticPayoutEvent(payload)) {
     otcPushSemantic(payload);
     return;
   }
   if (otcIsDiscoveryObservation(payload)) void chrome.runtime.sendMessage({ type: 'PROTOCOL_DISCOVERY_OBSERVATION', payload });
 });
 
-void chrome.storage.local.get(['protocolMode']).then((settings) => {
-  const mode = settings.protocolMode === 'PROTOCOL_DISCOVERY' ? 'PROTOCOL_DISCOVERY' : 'PRODUCTION';
-  window.postMessage({ source: OTC_CONTROL_SOURCE, mode }, window.location.origin);
-});
-
 const otcBridgeScript = document.createElement('script');
 otcBridgeScript.src = chrome.runtime.getURL('src/main-world/page-bridge.js');
 otcBridgeScript.type = 'module';
-otcBridgeScript.onload = () => otcBridgeScript.remove();
+otcBridgeScript.onload = () => {
+  otcBridgeScript.remove();
+  void chrome.storage.local.get(['protocolMode']).then((settings) => {
+    const mode = settings.protocolMode === 'PROTOCOL_DISCOVERY' ? 'PROTOCOL_DISCOVERY' : 'PRODUCTION';
+    window.postMessage({ source: OTC_CONTROL_SOURCE, mode }, window.location.origin);
+  });
+};
 (document.head || document.documentElement).appendChild(otcBridgeScript);

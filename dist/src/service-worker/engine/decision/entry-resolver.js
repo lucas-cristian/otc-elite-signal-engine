@@ -1,13 +1,15 @@
 import { canonicalEntityHash } from '../../../common/hashing/canonical-hash.js';
 function unknownPayout(decision, capturedAt) {
     return {
-        payoutSnapshotSchemaVersion: '1',
+        payoutSnapshotSchemaVersion: '2',
         canonicalAssetId: decision.canonicalAssetId,
-        expirationSeconds: decision.expirationSeconds,
+        expirationSeconds: null,
         payoutRate: null,
         capturedAt,
         source: 'UNKNOWN',
         quality: 'UNKNOWN',
+        feedId: null,
+        parserSchemaId: null,
     };
 }
 export class EntryResolver {

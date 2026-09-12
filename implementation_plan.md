@@ -2,57 +2,116 @@
 
 ## Status
 
-Code remediation implemented in sandbox on 2026-09-12.
+Release: **1.2.0**
 
-Scientific runtime status: **FAIL-CLOSED PENDING POCKET OPTION DEMO PROTOCOL VERIFICATION**.
+Scientific runtime status: **DEMO BINARY MARKET SCHEMA VERIFIED FOR `demo-api-eu.po.market`; OTHER FEEDS FAIL CLOSED**.
 
-The implementation must not be described as protocol-verified until the exact Pocket Option WebSocket schemas are observed and validated in a DEMO account. `protocolSchemaVerified` defaults to `false`, which prevents CALL/PUT decisions from becoming actionable signals.
+The exact Engine.IO 4 / Socket.IO binary schema used by the Pocket Option DEMO endpoint was captured and validated on 2026-09-12. Verification is scoped to the observed endpoint and exact parser schemas; it is not generalized to REAL endpoints or unobserved DEMO regions.
 
-## 1. Runtime boundaries
+## 1. Verified WebSocket transport
 
-### MAIN World
-
-`src/main-world/page-bridge.ts` is the only component that intercepts the page WebSocket. In `PRODUCTION`, it parses frames using strict versioned Pocket Option schemas and forwards only semantic market events. Unknown or malformed frames are rejected. Raw payload bytes are not transported to the extension runtime.
-
-In `PROTOCOL_DISCOVERY`, the bridge emits bounded redacted/structural observations and does not create market ticks.
-
-### ISOLATED World
-
-`src/isolated-world/content-script.ts` validates semantic events, preserves per-connection order, creates deterministic validated ticks, carries payout snapshots, batches observations, and forwards them to the Service Worker.
-
-### Service Worker
-
-`src/service-worker/core/quant-pipeline.ts` is the shared scientific pipeline used by live execution and replay. It persists evidence before causal entry resolution and treats IndexedDB as the authority for restart recovery.
-
-## 2. Deterministic identity and time
-
-Canonical scientific IDs use versioned domain-separated SHA-256 over canonical JSON.
-
-Tick fields preserve:
+Observed price sequence:
 
 ```text
-sourceTimestampEpochMs
-receivedAtEpochMs
-receivedAtMonotonicMs
-eventTimestampEpochMs
-timestampBasis
-observedTimestampDeltaMs
-transportLatencyMs
+451-["updateStream",{"_placeholder":true,"num":0}]
+<binary UTF-8 JSON attachment>
 ```
 
-`transportLatencyMs` remains `null` because source and local clocks are not assumed synchronized.
+Attachment:
 
-Tick IDs contain no random component. Source timestamps are normalized only by parser schemas that explicitly define their unit. Implausible timestamps are rejected instead of guessed.
+```text
+[[asset, sourceTimestampSeconds, price]]
+```
 
-## 3. Market source compatibility
+Observed payout sequence:
 
-`MarketSourceIdentity` includes platform, canonical asset, market type, source semantics, instrument ID, optional feed ID, and parser schema ID.
+```text
+451-["chafor",{"_placeholder":true,"num":0}]
+<binary UTF-8 JSON attachment>
+```
 
-Compatibility is symmetric and fail-closed. If one side has a feed ID and the other does not, compatibility is `INSUFFICIENT_IDENTITY`. Instrument and parser schema are mandatory.
+Attachment:
 
-## 4. Scientific timeframes and candles
+```text
+[[asset, payoutPercent]]
+```
 
-Supported timeframes are exactly:
+Observed history bootstrap:
+
+```text
+451-["updateHistoryNewFast",{"_placeholder":true,"num":0}]
+<binary attachment containing asset, period, history and candles>
+```
+
+Historical bootstrap packets are consumed but do not generate retrospective live decisions.
+
+## 2. MAIN World
+
+`src/main-world/page-bridge.ts` intercepts only Pocket Option `*.po.market` WebSockets. Each connection owns a stateful `PocketOptionSocketIoDecoder` and a serialized inbound promise chain so Blob decoding cannot reorder WebSocket frames.
+
+Semantic sequence numbers are assigned only after successful semantic decoding. Engine.IO handshakes, heartbeat frames, unknown events and historical bootstrap frames therefore do not create downstream sequence gaps.
+
+PRODUCTION forwards only semantic price/payout events. PROTOCOL_DISCOVERY forwards structural metadata only.
+
+## 3. Strict parser and source identity
+
+`src/common/protocol/pocket-option-parser.ts`:
+
+- accepts the captured `451-` one-attachment form;
+- requires the exact Socket.IO placeholder structure;
+- decodes Blob, ArrayBuffer and ArrayBufferView attachments;
+- accepts only finite positive price values;
+- accepts only `_otc` assets into the OTC pipeline;
+- attaches feed host and parser schema to `MarketSourceIdentity`;
+- marks only `demo-api-eu.po.market` + frozen observed schemas as `VERIFIED`;
+- marks matching REAL/unfrozen feeds `INFERRED`;
+- rejects malformed or unknown structures instead of guessing.
+
+## 4. Clock model
+
+The captured source clock was approximately two hours ahead of browser receipt time with a stable offset. The model therefore preserves both clocks but treats them as unsynchronized:
+
+```text
+sourceTimestampEpochMs = observed platform timestamp
+receivedAtEpochMs = browser epoch receipt time
+eventTimestampEpochMs = receivedAtEpochMs
+timestampBasis = LOCAL_RECEIPT
+sourceClockSynchronized = false
+observedTimestampDeltaMs = receivedAtEpochMs - sourceTimestampEpochMs
+transportLatencyMs = null
+```
+
+A stable unsynchronized offset does not by itself mark an otherwise valid tick `SUSPECT`.
+
+## 5. Payout model
+
+`chafor` produces an immutable `PayoutSnapshot` independent of price packets.
+
+The observed frame does not identify an expiration duration, therefore:
+
+```text
+expirationSeconds = null
+```
+
+Payout is keyed by canonical asset + feed. Cross-feed payout reuse is prohibited.
+
+## 6. ISOLATED World
+
+The content script validates semantic price and payout events, maintains per-connection semantic order, batches them and sends them to the Service Worker. Raw WebSocket bytes never cross the production MAIN → ISOLATED boundary.
+
+The PageBridge is installed before the asynchronous storage lookup for protocol mode, preventing the mode lookup from delaying WebSocket interception.
+
+## 7. Quantitative pipeline
+
+The Service Worker processes price and payout as separate chronological event types. Price events create Tick v3 records. Payout events update immutable journal state and the current feed-scoped payout cache.
+
+Source quality is carried by each Tick. Decision source quality is no longer a global boolean; it is derived from the actual feed/schema that produced the observation.
+
+A REAL endpoint with an otherwise matching schema remains `INFERRED` and is blocked by `UNVERIFIED_SOURCE_SCHEMA`.
+
+## 8. Scientific timeframes and features
+
+Supported timeframes remain exactly:
 
 ```text
 5s
@@ -62,107 +121,19 @@ Supported timeframes are exactly:
 60s
 ```
 
-Candles never carry forward a price into an empty interval. Empty intervals have null OHLC. The prior candle closes with its last real tick; a tick from the following interval is never used as an artificial close.
+Empty intervals have null OHLC. No synthetic carry-forward is permitted.
 
-## 5. Features, regimes and strategies
+Causal feature families, regime detection, five independent strategies, evidence-family caps, deterministic decision IDs, `modelScore` semantics and `calibratedProbability = null` remain unchanged from the scientific remediation baseline.
 
-The Feature Engine computes causal feature families using only observations before the information cutoff. It includes momentum, velocity, acceleration, volatility, candle anatomy, rejection, persistence, tick imbalance, directional sequences, price distance, compression, expansion, trend strength, final-seconds behavior, RSI Wilder, EMA, ATR, Stochastic and Bollinger z-score.
+## 9. Recovery, results and replay
 
-Warmup is per feature/strategy. Missing data remains `null`.
+MV3 recovery continues to derive pending entries/results from append-only journal set differences.
 
-Structure regime:
+Replay now interleaves payout snapshots and ticks by capture time and sends both through the same `QuantPipeline` used live.
 
-```text
-TREND_UP
-TREND_DOWN
-RANGE
-CHAOTIC
-UNKNOWN
-```
+IndexedDB version is bumped to 3 to prevent pre-1.2.0 Tick/Payout schemas from mixing with the verified protocol model.
 
-Volatility regime:
-
-```text
-LOW
-NORMAL
-HIGH
-UNKNOWN
-```
-
-CHAOTIC and UNKNOWN states fail closed.
-
-Independent strategies:
-
-```text
-MomentumStrategy
-ReversalStrategy
-ExhaustionStrategy
-BreakoutStrategy
-RejectionStrategy
-```
-
-Evidence is grouped by family with deterministic caps. `modelScore` is distinct from probability. `calibratedProbability` is statically `null`.
-
-## 6. Decision identity
-
-Evaluation windows are SHA-256 canonical entities containing asset, timeframe, candle start, window boundaries, expiry and config hash.
-
-Decision granularity is canonical and uses the versioned strategy group, evaluation window, expiry and config hash.
-
-Signal fingerprints use only concrete deterministic fields.
-
-## 7. Causal entry and payout snapshot
-
-Decision records are persisted before becoming pending entries. Entry resolution only accepts the first valid matching tick whose event timestamp is greater than or equal to `alertPublishedAt` and inside `maxEntryResolutionDelayMs`.
-
-Signals are created only after a resolved entry. Every signal carries an immutable `PayoutSnapshot`; missing payout remains explicit as unknown.
-
-## 8. Result model
-
-Resolved and unresolved results are separate discriminated unions. A resolved result cannot hold `UNRESOLVED` outcomes.
-
-Flat price produces directional `FLAT`. It never invents a broker refund. Without verified settlement, economic outcome is `UNKNOWN` and economic return is null.
-
-Reference-feed settlement inference is labeled `INFERRED`, not realized P&L.
-
-## 9. Durable MV3 recovery
-
-Service Worker recovery derives pending work from journal set differences rather than transient process memory. Timeouts are finalized idempotently on recovery.
-
-## 10. Analytics
-
-Analytics expose decision count, CALL/PUT count, entry resolution coverage, resolved directional sample size, directional accuracy with Wilson interval, economic sample size, economic coverage, settlement confidence counts, and observed mean reference return.
-
-Economic evidence remains `DESCRIPTIVE_ONLY` in V1 and is never promoted to proof of edge by win-rate alone.
-
-## 11. Replay and export
-
-Scientific datasets include:
-
-```text
-datasetSchemaVersion
-datasetId
-createdAt
-appVersion
-buildId
-gitCommit
-configHashes
-checksumSha256
-ticks
-payoutSnapshots
-candles
-decisions
-entryResolutions
-decisionSignalLinks
-signals
-results
-```
-
-Replay validates the checksum and processes one tick at a time through the same `QuantPipeline`. Tests assert deterministic decision IDs between live simulation and replay.
-
-## 12. Build and acceptance gates
-
-Scripts:
+## 10. Validation gates
 
 ```text
 npm run typecheck
@@ -172,32 +143,41 @@ npm run validate:manifest
 npm run verify
 ```
 
-Sandbox result on 2026-09-12:
+Release 1.2.0 sandbox result:
 
 ```text
 typecheck: PASS
-tests: 12/12 PASS
-build: PASS
-manifest validation: PASS
-zero-any scan: PASS
-Math.random scan: PASS
-placeholder/TODO/FIXME scan: PASS
-old timeframe scan: PASS
+tests: 16/16 PASS
+captured DEMO raw protocol decoder replay: PASS
+captured price semantic events: 234
+captured payout semantic events: 24
+captured quantitative ticks: 234
+captured candles: 64
+captured decisions: 54
+captured signals: 4
+captured resolved results within capture window: 2
+all captured ticks integrity: VALID
+all captured ticks timestampBasis: LOCAL_RECEIPT
+all captured ticks sourceQuality: VERIFIED
 ```
 
-## 13. External DEMO acceptance gate
+## 11. Verification boundary
 
-Still required outside the current sandbox:
+The following are verified:
 
-1. Load `dist/` as an unpacked Chrome extension.
-2. Sign in to Pocket Option with a DEMO account only.
-3. Confirm DEMO balance visually before any protocol inspection.
-4. Use `PROTOCOL_DISCOVERY` to observe schema structure without persisting sensitive payloads.
-5. Verify exact price, instrument, timestamp and payout schemas against live DEMO traffic.
-6. Add/adjust versioned parser schemas only from observed evidence.
-7. Run a schema-specific regression fixture.
-8. Set `protocolSchemaVerified` only for a schema/version that passed those checks.
-9. Confirm Production emits real semantic ticks and rejects unknown frames.
-10. Confirm no order execution, auto-click or auto-trading path exists.
+- `demo-api-eu.po.market`
+- `POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1`
+- `POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1`
+- exact `updateStream` attachment shape observed on 2026-09-12
+- exact `chafor` attachment shape observed on 2026-09-12
 
-Until this gate is complete, CALL/PUT remains fail-closed by design.
+The following remain fail-closed until separately captured and frozen:
+
+- other DEMO regions;
+- REAL endpoints;
+- changed Socket.IO attachment counts;
+- changed event names;
+- changed payload layouts;
+- any source-clock synchronization assumption.
+
+No auto-trading, auto-click, order submission or broker execution path is part of the project.

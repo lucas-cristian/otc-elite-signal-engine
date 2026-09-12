@@ -8,14 +8,14 @@ import type { DecisionRecord, FeatureSnapshot } from '../src/common/models/journ
 
 const source: MarketSourceIdentity = {
   marketSourceIdentitySchemaVersion: '2', platform: 'POCKET_OPTION', canonicalAssetId: 'EURUSDOTC', marketType: 'OTC',
-  source: 'POCKET_OPTION_WS_JSON', feedId: null, instrumentId: 'EURUSD_otc', parserSchemaId: 'POCKET_OPTION_SOCKETIO_DIRECT_V1',
+  source: 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON', feedId: 'demo-api-eu.po.market', instrumentId: 'EURUSD_otc', parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1',
 };
 
 function tick(ts: number, price: number, seq: number): Tick {
   return {
-    tickSchemaVersion: '2', tickId: `t${seq}`, marketSourceIdentity: source, pageSessionId: 's1', connectionId: 'c1', sequence: seq,
+    tickSchemaVersion: '3', tickId: `t${seq}`, marketSourceIdentity: source, pageSessionId: 's1', connectionId: 'c1', sequence: seq,
     sourceTimestampEpochMs: ts, receivedAtEpochMs: ts + 5, receivedAtMonotonicMs: seq, eventTimestampEpochMs: ts,
-    timestampBasis: 'SOURCE', observedTimestampDeltaMs: 5, transportLatencyMs: null, price, integrity: 'VALID',
+    timestampBasis: 'SOURCE', sourceClockSynchronized: true, observedTimestampDeltaMs: 5, transportLatencyMs: null, price, integrity: 'VALID', sourceQuality: 'VERIFIED',
   };
 }
 

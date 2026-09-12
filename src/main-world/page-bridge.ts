@@ -1,4 +1,8 @@
-import { extractSocketIoEventName, parsePocketOptionProductionFrame } from '../common/protocol/pocket-option-parser.js';
+import {
+  extractSocketIoEventName,
+  isPocketOptionMarketWebSocketUrl,
+  PocketOptionSocketIoDecoder,
+} from '../common/protocol/pocket-option-parser.js';
 import type { DiscoveryObservation, MainToIsolatedEvent, RuntimeMode } from '../common/protocol/market-events.js';
 
 const BRIDGE_SOURCE = 'OTC_ELITE_PAGE_BRIDGE_V2';
@@ -29,6 +33,9 @@ function setupPageBridge(): void {
     } else if (data instanceof ArrayBuffer) {
       payloadType = 'BINARY';
       byteLength = data.byteLength;
+    } else if (ArrayBuffer.isView(data)) {
+      payloadType = 'BINARY';
+      byteLength = data.byteLength;
     } else if (data instanceof Blob) {
       payloadType = 'BLOB';
       byteLength = data.size;
@@ -48,41 +55,41 @@ function setupPageBridge(): void {
 
   class InterceptedWebSocket extends OriginalWebSocket {
     private readonly connectionId: string;
-    private nextSequence = 0;
+    private readonly observed: boolean;
+    private readonly decoder: PocketOptionSocketIoDecoder;
+    private inboundQueue: Promise<void> = Promise.resolve();
 
     public constructor(url: string | URL, protocols?: string | string[]) {
       super(url, protocols);
+      const endpointUrl = String(url);
       this.connectionId = `ws-${++connectionCounter}`;
+      this.observed = isPocketOptionMarketWebSocketUrl(endpointUrl);
+      this.decoder = new PocketOptionSocketIoDecoder(this.connectionId, endpointUrl);
+      if (!this.observed) return;
       this.addEventListener('open', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'OPEN', receivedAtEpochMs: Date.now() }));
       this.addEventListener('close', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'CLOSE', receivedAtEpochMs: Date.now() }));
       this.addEventListener('error', () => emit({ type: 'CONNECTION', connectionId: this.connectionId, event: 'ERROR', receivedAtEpochMs: Date.now() }));
-      this.addEventListener('message', (event: MessageEvent<unknown>) => this.processInbound(event.data));
+      this.addEventListener('message', (event: MessageEvent<unknown>) => {
+        const timing = { receivedAtEpochMs: Date.now(), receivedAtMonotonicMs: performance.now() };
+        const data = event.data;
+        this.inboundQueue = this.inboundQueue
+          .then(() => this.processInbound(data, timing))
+          .catch(() => undefined);
+      });
     }
 
     public override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
-      if (mode === 'PROTOCOL_DISCOVERY') emit(discoveryObservation(this.connectionId, 'OUTBOUND', data, Date.now()));
+      if (this.observed && mode === 'PROTOCOL_DISCOVERY') emit(discoveryObservation(this.connectionId, 'OUTBOUND', data, Date.now()));
       super.send(data);
     }
 
-    private processInbound(data: unknown): void {
-      const receivedAtEpochMs = Date.now();
-      const receivedAtMonotonicMs = performance.now();
-      const sequence = this.nextSequence++;
+    private async processInbound(data: unknown, timing: { receivedAtEpochMs: number; receivedAtMonotonicMs: number }): Promise<void> {
       if (mode === 'PROTOCOL_DISCOVERY') {
-        emit(discoveryObservation(this.connectionId, 'INBOUND', data, receivedAtEpochMs));
+        emit(discoveryObservation(this.connectionId, 'INBOUND', data, timing.receivedAtEpochMs));
         return;
       }
-      if (typeof data === 'string') {
-        const parsed = parsePocketOptionProductionFrame(data, { connectionId: this.connectionId, sequence, receivedAtEpochMs, receivedAtMonotonicMs });
-        if (parsed) emit(parsed);
-        return;
-      }
-      if (data instanceof Blob) {
-        void data.text().then((text) => {
-          const parsed = parsePocketOptionProductionFrame(text, { connectionId: this.connectionId, sequence, receivedAtEpochMs, receivedAtMonotonicMs });
-          if (parsed) emit(parsed);
-        });
-      }
+      const events = await this.decoder.ingest(data, timing);
+      for (const event of events) emit(event);
     }
   }
 

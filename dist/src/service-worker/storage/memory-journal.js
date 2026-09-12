@@ -9,7 +9,7 @@ export class MemoryJournal {
     signals = new Map();
     results = new Map();
     async appendTick(value) { this.append(this.ticks, value.tickId, value); }
-    async appendPayoutSnapshot(value) { this.append(this.payouts, `${value.canonicalAssetId}:${value.expirationSeconds}:${value.capturedAt}`, value); }
+    async appendPayoutSnapshot(value) { this.append(this.payouts, `${value.canonicalAssetId}:${value.feedId ?? 'UNKNOWN'}:${value.expirationSeconds ?? 'ANY'}:${value.capturedAt}`, value); }
     async appendCandle(value) { this.append(this.candles, this.candleKey(value), value); }
     async appendDecision(value) { this.append(this.decisions, value.decisionId, value); }
     async appendEntryResolution(value) { this.append(this.entries, value.decisionId, value); }

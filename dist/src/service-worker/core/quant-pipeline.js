@@ -7,14 +7,13 @@ import { EntryResolver } from '../engine/decision/entry-resolver.js';
 import { ResultEngine } from '../evaluation/result-engine.js';
 import { RecoveryService } from '../storage/recovery-service.js';
 export const DEFAULT_PIPELINE_CONFIG = {
-    appVersion: '1.1.0',
+    appVersion: '1.2.0',
     executionMode: 'LIVE',
     timeframes: ['5s', '10s', '15s', '30s', '60s'],
     expirationSeconds: 60,
     minModelScore: 0.35,
     maxEntryResolutionDelayMs: 3_000,
     maxExpiryResolutionDelayMs: 5_000,
-    protocolSchemaVerified: false,
     maxHotTicks: 2_000,
     maxCandlesPerTimeframe: 200,
 };
@@ -29,7 +28,7 @@ export class QuantPipeline {
     decisionEngine;
     pendingEntries = new Map();
     pendingSignals = new Map();
-    payoutByAsset = new Map();
+    payoutByAssetAndFeed = new Map();
     emittedCandles = [];
     processing = Promise.resolve();
     currentNow = 0;
@@ -45,7 +44,6 @@ export class QuantPipeline {
             minModelScore: config.minModelScore,
             maxEntryResolutionDelayMs: config.maxEntryResolutionDelayMs,
             maxExpiryResolutionDelayMs: config.maxExpiryResolutionDelayMs,
-            protocolSchemaVerified: config.protocolSchemaVerified,
         };
         this.decisionEngine = new DecisionEngine({
             executionMode: config.executionMode,
@@ -77,6 +75,10 @@ export class QuantPipeline {
         this.processing = this.processing.then(() => this.processObservation(observation));
         return this.processing;
     }
+    enqueuePayout(payoutSnapshot) {
+        this.processing = this.processing.then(() => this.processPayout(payoutSnapshot));
+        return this.processing;
+    }
     async drain() {
         await this.processing;
     }
@@ -84,10 +86,6 @@ export class QuantPipeline {
         const tick = observation.tick;
         this.currentNow = tick.receivedAtEpochMs;
         this.latestTick = tick;
-        if (observation.payoutSnapshot?.canonicalAssetId === tick.marketSourceIdentity.canonicalAssetId) {
-            this.payoutByAsset.set(observation.payoutSnapshot.canonicalAssetId, observation.payoutSnapshot);
-            await this.journal.appendPayoutSnapshot(observation.payoutSnapshot);
-        }
         await this.journal.appendTick(tick);
         await this.resolveExistingEntries(tick);
         await this.resolveExistingResults(tick);
@@ -103,6 +101,11 @@ export class QuantPipeline {
             if (candle)
                 await this.handleCandle(candle, asset);
         }
+    }
+    async processPayout(payoutSnapshot) {
+        this.currentNow = Math.max(this.currentNow, payoutSnapshot.capturedAt);
+        this.payoutByAssetAndFeed.set(this.payoutKey(payoutSnapshot.canonicalAssetId, payoutSnapshot.feedId), payoutSnapshot);
+        await this.journal.appendPayoutSnapshot(payoutSnapshot);
     }
     assetRuntime(canonicalAssetId) {
         const existing = this.assets.get(canonicalAssetId);
@@ -147,7 +150,7 @@ export class QuantPipeline {
             regime,
             eventIntegrity: this.latestTick?.integrity ?? 'INVALID',
             operationalDataState,
-            sourceQuality: this.config.protocolSchemaVerified ? 'VERIFIED' : 'INFERRED',
+            sourceQuality: this.latestTick?.sourceQuality ?? 'UNKNOWN',
         });
         await this.journal.appendDecision(decision);
         if (decision.finalDecision === 'CALL' || decision.finalDecision === 'PUT')
@@ -157,7 +160,8 @@ export class QuantPipeline {
         for (const [decisionId, decision] of [...this.pendingEntries]) {
             if (decision.canonicalAssetId !== tick.marketSourceIdentity.canonicalAssetId)
                 continue;
-            const outcome = this.entryResolver.resolveFromTick(decision, tick, this.payoutByAsset.get(decision.canonicalAssetId) ?? null);
+            const payoutSnapshot = this.payoutByAssetAndFeed.get(this.payoutKey(decision.canonicalAssetId, tick.marketSourceIdentity.feedId)) ?? null;
+            const outcome = this.entryResolver.resolveFromTick(decision, tick, payoutSnapshot);
             if (!outcome)
                 continue;
             this.pendingEntries.delete(decisionId);
@@ -179,6 +183,9 @@ export class QuantPipeline {
             this.pendingSignals.delete(signalId);
             await this.journal.appendResult(result);
         }
+    }
+    payoutKey(canonicalAssetId, feedId) {
+        return `${canonicalAssetId}:${feedId ?? 'UNKNOWN'}`;
     }
     async expirePending(nowMs) {
         for (const [decisionId, decision] of [...this.pendingEntries]) {

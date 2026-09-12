@@ -2,7 +2,7 @@ export type TimestampBasis = 'SOURCE' | 'LOCAL_RECEIPT';
 export type EventIntegrity = 'VALID' | 'SUSPECT' | 'INVALID';
 export type OperationalDataState = 'INITIALIZING' | 'WARMING_UP' | 'HEALTHY' | 'DEGRADED' | 'STALE' | 'DATA_UNAVAILABLE';
 export type SourceQuality = 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
-export type PriceSource = 'POCKET_OPTION_WS_JSON';
+export type PriceSource = 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON';
 export type ExecutionMode = 'LIVE' | 'REPLAY';
 export type EntryReferencePolicy = 'FIRST_TICK_AFTER_ALERT';
 export type ExpiryPolicy = 'FIXED_DELAY_FROM_ENTRY';
@@ -16,13 +16,13 @@ export interface MarketSourceIdentity {
   canonicalAssetId: string;
   marketType: 'OTC';
   source: PriceSource;
-  feedId: string | null;
+  feedId: string;
   instrumentId: string;
   parserSchemaId: string;
 }
 
 export interface Tick {
-  tickSchemaVersion: '2';
+  tickSchemaVersion: '3';
   tickId: string;
   marketSourceIdentity: MarketSourceIdentity;
   pageSessionId: string;
@@ -33,10 +33,12 @@ export interface Tick {
   receivedAtMonotonicMs: number;
   eventTimestampEpochMs: number;
   timestampBasis: TimestampBasis;
+  sourceClockSynchronized: boolean;
   observedTimestampDeltaMs: number | null;
   transportLatencyMs: null;
   price: number;
   integrity: EventIntegrity;
+  sourceQuality: SourceQuality;
 }
 
 export type CandleLifecycle = 'FORMING' | 'CLOSED' | 'EMPTY_INTERVAL';
@@ -59,11 +61,13 @@ export interface Candle {
 }
 
 export interface PayoutSnapshot {
-  payoutSnapshotSchemaVersion: '1';
+  payoutSnapshotSchemaVersion: '2';
   canonicalAssetId: string;
-  expirationSeconds: number;
+  expirationSeconds: number | null;
   payoutRate: number | null;
   capturedAt: number;
   source: 'PLATFORM_PROTOCOL' | 'PLATFORM_DOM' | 'UNKNOWN';
-  quality: 'VERIFIED' | 'INFERRED' | 'UNKNOWN';
+  quality: SourceQuality;
+  feedId: string | null;
+  parserSchemaId: string | null;
 }

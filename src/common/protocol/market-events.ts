@@ -1,4 +1,4 @@
-import type { MarketSourceIdentity, PayoutSnapshot, Tick } from '../models/types.js';
+import type { MarketSourceIdentity, PayoutSnapshot, SourceQuality, Tick } from '../models/types.js';
 
 export type RuntimeMode = 'PRODUCTION' | 'PROTOCOL_DISCOVERY';
 export type ConnectionEventType = 'OPEN' | 'CLOSE' | 'ERROR';
@@ -10,9 +10,17 @@ export interface SemanticPriceEvent {
   identity: MarketSourceIdentity;
   price: number;
   sourceTimestampEpochMs: number | null;
+  sourceClockSynchronized: boolean;
+  sourceQuality: SourceQuality;
   receivedAtEpochMs: number;
   receivedAtMonotonicMs: number;
-  payoutSnapshot: PayoutSnapshot | null;
+}
+
+export interface SemanticPayoutEvent {
+  type: 'SEMANTIC_PAYOUT';
+  connectionId: string;
+  sequence: number;
+  payoutSnapshot: PayoutSnapshot;
 }
 
 export interface SemanticConnectionEvent {
@@ -32,9 +40,9 @@ export interface DiscoveryObservation {
   receivedAtEpochMs: number;
 }
 
-export type MainToIsolatedEvent = SemanticPriceEvent | SemanticConnectionEvent | DiscoveryObservation;
+export type SemanticMarketEvent = SemanticPriceEvent | SemanticPayoutEvent;
+export type MainToIsolatedEvent = SemanticMarketEvent | SemanticConnectionEvent | DiscoveryObservation;
 
 export interface ValidatedMarketObservation {
   tick: Tick;
-  payoutSnapshot: PayoutSnapshot | null;
 }

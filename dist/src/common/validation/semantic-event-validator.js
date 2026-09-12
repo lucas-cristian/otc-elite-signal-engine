@@ -1,33 +1,66 @@
+function isRecord(value) {
+    return typeof value === 'object' && value !== null;
+}
+function isSourceQuality(value) {
+    return value === 'VERIFIED' || value === 'INFERRED' || value === 'UNKNOWN';
+}
 export function isSemanticPriceEvent(value) {
-    if (typeof value !== 'object' || value === null)
+    if (!isRecord(value) || value.type !== 'SEMANTIC_PRICE')
         return false;
-    const event = value;
-    if (event.type !== 'SEMANTIC_PRICE')
+    if (typeof value.connectionId !== 'string' || value.connectionId.length === 0)
         return false;
-    if (typeof event.connectionId !== 'string' || event.connectionId.length === 0)
+    if (!Number.isInteger(value.sequence) || value.sequence < 0)
         return false;
-    if (!Number.isInteger(event.sequence) || event.sequence < 0)
+    if (typeof value.price !== 'number' || !Number.isFinite(value.price) || value.price <= 0)
         return false;
-    if (typeof event.price !== 'number' || !Number.isFinite(event.price) || event.price <= 0)
+    if (value.sourceTimestampEpochMs !== null && (typeof value.sourceTimestampEpochMs !== 'number' || !Number.isFinite(value.sourceTimestampEpochMs)))
         return false;
-    if (event.sourceTimestampEpochMs !== null && (typeof event.sourceTimestampEpochMs !== 'number' || !Number.isFinite(event.sourceTimestampEpochMs)))
+    if (typeof value.sourceClockSynchronized !== 'boolean' || !isSourceQuality(value.sourceQuality))
         return false;
-    if (typeof event.receivedAtEpochMs !== 'number' || !Number.isFinite(event.receivedAtEpochMs))
+    if (typeof value.receivedAtEpochMs !== 'number' || !Number.isFinite(value.receivedAtEpochMs))
         return false;
-    if (typeof event.receivedAtMonotonicMs !== 'number' || !Number.isFinite(event.receivedAtMonotonicMs))
+    if (typeof value.receivedAtMonotonicMs !== 'number' || !Number.isFinite(value.receivedAtMonotonicMs))
         return false;
-    if (typeof event.identity !== 'object' || event.identity === null)
+    if (!isRecord(value.identity))
         return false;
-    const identity = event.identity;
+    const identity = value.identity;
     return identity.marketSourceIdentitySchemaVersion === '2'
         && identity.platform === 'POCKET_OPTION'
         && typeof identity.canonicalAssetId === 'string'
         && identity.canonicalAssetId.length > 0
         && identity.marketType === 'OTC'
-        && identity.source === 'POCKET_OPTION_WS_JSON'
+        && identity.source === 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON'
         && typeof identity.instrumentId === 'string'
-        && identity.instrumentId.length > 0
+        && identity.instrumentId.toLowerCase().endsWith('_otc')
         && typeof identity.parserSchemaId === 'string'
         && identity.parserSchemaId.length > 0
-        && (identity.feedId === null || typeof identity.feedId === 'string');
+        && typeof identity.feedId === 'string'
+        && identity.feedId.endsWith('.po.market');
+}
+export function isSemanticPayoutEvent(value) {
+    if (!isRecord(value) || value.type !== 'SEMANTIC_PAYOUT')
+        return false;
+    if (typeof value.connectionId !== 'string' || value.connectionId.length === 0)
+        return false;
+    if (!Number.isInteger(value.sequence) || value.sequence < 0)
+        return false;
+    if (!isRecord(value.payoutSnapshot))
+        return false;
+    const payout = value.payoutSnapshot;
+    return payout.payoutSnapshotSchemaVersion === '2'
+        && typeof payout.canonicalAssetId === 'string'
+        && payout.canonicalAssetId.length > 0
+        && payout.expirationSeconds === null
+        && typeof payout.payoutRate === 'number'
+        && Number.isFinite(payout.payoutRate)
+        && payout.payoutRate >= 0
+        && payout.payoutRate <= 1
+        && typeof payout.capturedAt === 'number'
+        && Number.isFinite(payout.capturedAt)
+        && payout.source === 'PLATFORM_PROTOCOL'
+        && isSourceQuality(payout.quality)
+        && typeof payout.feedId === 'string'
+        && payout.feedId.endsWith('.po.market')
+        && typeof payout.parserSchemaId === 'string'
+        && payout.parserSchemaId.length > 0;
 }
