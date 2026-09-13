@@ -2,7 +2,7 @@ import { canonicalEntityHash, canonicalJson } from '../../common/hashing/canonic
 import { sha256 } from '../../common/hashing/sha256.js';
 import type { ScientificDataset } from '../../common/models/dataset-types.js';
 import type { DecisionRecord, EntryResolutionRecord, ResultRecord, SignalRecord } from '../../common/models/journal-types.js';
-import type { MarketSourceIdentity } from '../../common/models/types.js';
+import type { MarketSourceIdentity, Tick } from '../../common/models/types.js';
 import type { JournalSnapshot } from '../../service-worker/storage/journal-repository.js';
 import { exactOneSidedBinomialPValue } from '../statistics/exact-binomial.js';
 import { wilsonInterval } from '../statistics/wilson-interval.js';
@@ -12,10 +12,11 @@ import {
   PHASE4_BASELINE_APP_VERSION,
   PHASE4_BASELINE_SCIENTIFIC_CORE_SHA256,
   PHASE4_BASELINE_STRATEGY_GIT_COMMIT,
+  PHASE4_BUILTIN_HISTORICAL_INVALIDATIONS,
   PHASE4_DATASET_SCHEMA_VERSION,
   PHASE4_EXPERIMENT_ID,
   PHASE4_PROTOCOL_VERSION,
-  PHASE4_RETIRED_EXPERIMENT_ID,
+  PHASE4_RETIRED_EXPERIMENT_IDS,
   PHASE4_STABILITY_BLOCK_SIZE,
   PHASE4_STRICT_SETTLEMENT_MAX_DELAY_MS,
   PHASE4_TARGET_SAMPLE_SIZE,
@@ -112,6 +113,7 @@ function verifyDatasetIntegrity(dataset: ScientificDatasetV10): void {
   const { datasetId, ...manifestBase } = dataset.manifest;
   if (canonicalEntityHash('DATASET', 10, manifestBase) !== datasetId) throw new Error('Phase 4 datasetId mismatch');
 
+  assertUnique(dataset.ticks.map((item) => item.tickId), 'tickId');
   assertUnique(dataset.decisions.map((item) => item.decisionId), 'decisionId');
   assertUnique(dataset.entryResolutions.map((item) => item.entryResolutionId), 'entryResolutionId');
   assertUnique(dataset.signals.map((item) => item.signalId), 'signalId');
@@ -140,6 +142,10 @@ function sameMarketSource(a: MarketSourceIdentity, b: MarketSourceIdentity): boo
   return a.platform === b.platform && a.canonicalAssetId === b.canonicalAssetId && a.marketType === b.marketType && a.source === b.source && a.feedId === b.feedId && a.instrumentId === b.instrumentId && a.parserSchemaId === b.parserSchemaId;
 }
 
+function marketTickAnchorKey(identity: MarketSourceIdentity, pageSessionId: string, timestamp: number, price: number): string {
+  return canonicalJson({ identity, pageSessionId, timestamp, price });
+}
+
 function expectedPriceOutcome(entry: number, exit: number): 'UP' | 'DOWN' | 'FLAT' { return exit > entry ? 'UP' : exit < entry ? 'DOWN' : 'FLAT'; }
 function expectedDirectionalOutcome(direction: 'CALL' | 'PUT', price: 'UP' | 'DOWN' | 'FLAT'): 'CORRECT' | 'INCORRECT' | 'FLAT' {
   if (price === 'FLAT') return 'FLAT';
@@ -150,7 +156,7 @@ export class Phase4ValidationEngine {
   public constructor(private readonly repository: Phase4Repository) {}
 
   public async startExperiment(snapshot: JournalSnapshot, build: Phase4BuildIdentity, nowMs: number): Promise<Phase4Experiment> {
-    await this.retireLegacyExperimentIfPresent(nowMs);
+    await this.retireLegacyExperimentsIfPresent(nowMs);
     const stored = await this.repository.snapshot();
     const existing = stored.experiments.find((experiment) => experiment.experimentId === PHASE4_EXPERIMENT_ID);
     if (existing) return existing;
@@ -170,14 +176,14 @@ export class Phase4ValidationEngine {
       stabilityPolicyId: 'STABILITY_GATE_V1', stabilityBlockSize: PHASE4_STABILITY_BLOCK_SIZE, datasetSchemaVersion: PHASE4_DATASET_SCHEMA_VERSION,
     };
     await this.repository.appendExperiment(experiment);
-    await this.appendAudit(experiment.experimentId, 'EXPERIMENT_CREATED', nowMs, 'Prospective Phase 4 v2 experiment created');
+    await this.appendAudit(experiment.experimentId, 'EXPERIMENT_CREATED', nowMs, 'Prospective Phase 4 v3 experiment created');
     await this.appendAudit(experiment.experimentId, 'EXPERIMENT_FROZEN', nowMs, 'Protocol, scientific core, validation authority, config hash and confirmatory rules frozen');
     await this.appendAudit(experiment.experimentId, 'COLLECTION_STARTED', nowMs, 'Prospective collection boundary established');
     return experiment;
   }
 
   public async syncLiveJournal(snapshot: JournalSnapshot, build: Phase4BuildIdentity, nowMs: number): Promise<Phase4Report> {
-    await this.retireLegacyExperimentIfPresent(nowMs);
+    await this.retireLegacyExperimentsIfPresent(nowMs);
     const stored = await this.repository.snapshot();
     const experiment = stored.experiments.find((item) => item.experimentId === PHASE4_EXPERIMENT_ID) ?? null;
     if (!experiment) return this.reportFromSnapshot(stored, null);
@@ -186,7 +192,8 @@ export class Phase4ValidationEngine {
     if (build.phase4ValidationAuthoritySha256 !== experiment.validationAuthoritySha256) return this.invalidateAndReport(experiment, nowMs, 'VALIDATION_AUTHORITY_MISMATCH', `Expected ${experiment.validationAuthoritySha256}, got ${build.phase4ValidationAuthoritySha256 ?? 'null'}`);
     if (build.phase4ProtocolSha256 !== experiment.protocolSha256) return this.invalidateAndReport(experiment, nowMs, 'PHASE4_PROTOCOL_MISMATCH', `Expected ${experiment.protocolSha256}, got ${build.phase4ProtocolSha256 ?? 'null'}`);
     if (build.gitCommit === null || build.gitProvenance !== 'GIT' || build.gitWorkingTreeClean !== true) return this.invalidateAndReport(experiment, nowMs, 'DATASET_PROVENANCE_INVALID', 'Live build requires clean GIT provenance');
-    const counts = await this.ingestRecords(experiment, snapshot.decisions, snapshot.entryResolutions, snapshot.signals, snapshot.results, 'LIVE_JOURNAL', build.gitCommit, false);
+    if (build.gitCommit !== experiment.createdByBuildGitCommit) return this.invalidateAndReport(experiment, nowMs, 'DATASET_PROVENANCE_INVALID', `Expected Git commit ${experiment.createdByBuildGitCommit}, got ${build.gitCommit}`);
+    const counts = await this.ingestRecords(experiment, snapshot.ticks, snapshot.decisions, snapshot.entryResolutions, snapshot.signals, snapshot.results, 'LIVE_JOURNAL', build.gitCommit, false);
     if (counts.accepted > 0 || counts.excluded > 0) await this.appendAudit(experiment.experimentId, 'LIVE_JOURNAL_SYNCED', nowMs, `accepted=${counts.accepted}; excluded=${counts.excluded}`);
     await this.evaluateIfReady(experiment);
     return this.report();
@@ -200,6 +207,7 @@ export class Phase4ValidationEngine {
     const experiment = stored.experiments.find((item) => item.experimentId === PHASE4_EXPERIMENT_ID);
     if (!experiment) throw new Error('Start and freeze Phase 4 before importing datasets');
     if (parsed.manifest.gitCommit === null || parsed.manifest.gitProvenance !== 'GIT') throw new Error('Dataset GIT provenance invalid');
+    if (parsed.manifest.gitCommit !== experiment.createdByBuildGitCommit) throw new Error('Dataset Git commit does not match frozen Phase 4 build commit');
     if (parsed.manifest.gitWorkingTreeClean !== true) throw new Error('Dataset working tree was not clean at build time');
     if (parsed.manifest.sourceTreeSha256 !== experiment.createdBySourceTreeSha256) throw new Error('Dataset source tree does not match frozen Phase 4 source tree');
     if (parsed.manifest.scientificCoreSha256 !== experiment.scientificCoreSha256) throw new Error('Dataset scientific core does not match frozen Phase 4 core');
@@ -208,7 +216,7 @@ export class Phase4ValidationEngine {
     if (!parsed.manifest.configHashes.includes(experiment.configHash)) throw new Error('Dataset does not contain the frozen Phase 4 config hash');
     const datasetKey = `${experiment.experimentId}:${parsed.manifest.datasetId}`;
     if (stored.datasets.some((dataset) => dataset.key === datasetKey)) return this.reportFromSnapshot(stored, experiment);
-    const counts = await this.ingestRecords(experiment, parsed.decisions, parsed.entryResolutions, parsed.signals, parsed.results, parsed.manifest.datasetId, parsed.manifest.gitCommit, true);
+    const counts = await this.ingestRecords(experiment, parsed.ticks, parsed.decisions, parsed.entryResolutions, parsed.signals, parsed.results, parsed.manifest.datasetId, parsed.manifest.gitCommit, true);
     const record: Phase4DatasetImportRecord = {
       importSchemaVersion: '2', key: datasetKey, experimentId: experiment.experimentId, datasetId: parsed.manifest.datasetId, datasetSchemaVersion: parsed.manifest.datasetSchemaVersion,
       checksumSha256: parsed.manifest.checksumSha256, gitCommit: parsed.manifest.gitCommit, gitProvenance: 'GIT', gitWorkingTreeClean: true,
@@ -236,7 +244,7 @@ export class Phase4ValidationEngine {
     const body = {
       report,
       experiment,
-      acceptedEpisodes: sortedEpisodes(snapshot.episodes.filter((item) => item.experimentId === experiment.experimentId)),
+      acceptedEpisodes: sortedEpisodes(snapshot.episodes.filter((item) => item.experimentId === experiment.experimentId)).slice(0, experiment.targetSampleSize),
       importedDatasets: snapshot.datasets.filter((item) => item.experimentId === experiment.experimentId).sort((a, b) => a.datasetId.localeCompare(b.datasetId)),
       exclusions: snapshot.exclusions.filter((item) => item.experimentId === experiment.experimentId).sort((a, b) => a.occurredAt - b.occurredAt || a.exclusionId.localeCompare(b.exclusionId)),
       auditEvents: snapshot.auditEvents.filter((item) => item.experimentId === experiment.experimentId).sort((a, b) => a.occurredAt - b.occurredAt || a.auditEventId.localeCompare(b.auditEventId)),
@@ -247,39 +255,61 @@ export class Phase4ValidationEngine {
     return { manifest: { ...manifestBase, evidenceBundleId: canonicalEntityHash('PHASE4_EVIDENCE_BUNDLE', 1, manifestBase) }, ...body };
   }
 
-  private async ingestRecords(experiment: Phase4Experiment, decisions: DecisionRecord[], entries: EntryResolutionRecord[], signals: SignalRecord[], results: ResultRecord[], sourceDatasetId: string, sourceGitCommit: string, recordDuplicates: boolean): Promise<IngestionCounts> {
+  private async ingestRecords(
+    experiment: Phase4Experiment,
+    ticks: Tick[],
+    decisions: DecisionRecord[],
+    entries: EntryResolutionRecord[],
+    signals: SignalRecord[],
+    results: ResultRecord[],
+    sourceDatasetId: string,
+    sourceGitCommit: string,
+    recordDuplicates: boolean,
+  ): Promise<IngestionCounts> {
     const decisionById = new Map(decisions.map((decision) => [decision.decisionId, decision]));
     const signalById = new Map(signals.map((signal) => [signal.signalId, signal]));
     const entryByDecisionId = new Map(entries.map((entry) => [entry.decisionId, entry]));
+    const tickById = new Map(ticks.map((tick) => [tick.tickId, tick]));
+    const exitTickAnchors = new Set(ticks.map((tick) => marketTickAnchorKey(tick.marketSourceIdentity, tick.pageSessionId, tick.eventTimestampEpochMs, tick.price)));
     const existingSnapshot = await this.repository.snapshot();
+    const existingExperimentEpisodes = sortedEpisodes(existingSnapshot.episodes.filter((episode) => episode.experimentId === experiment.experimentId));
     const existingKeys = new Set(existingSnapshot.episodes.map((episode) => episode.key));
+    const candidateKeys = new Set<string>();
     const existingExclusionIds = new Set(existingSnapshot.exclusions.map((item) => item.exclusionId));
     const evaluation = existingSnapshot.evaluations.find((item) => item.experimentId === experiment.experimentId) ?? null;
-    let accepted = 0; let excluded = 0; let duplicates = 0;
+    const eligibleCandidates: Array<{ result: ResultRecord & { resolutionStatus: 'RESOLVED' }; signal: SignalRecord; decision: DecisionRecord; entry: EntryResolutionRecord & { resolutionStatus: 'RESOLVED' }; key: string; episode: Phase4EpisodeRecord }> = [];
+    let accepted = 0;
+    let excluded = 0;
+    let duplicates = 0;
 
-    for (const result of results) {
+    const orderedResults = [...results].sort((a, b) => {
+      const aSignal = signalById.get(a.signalId);
+      const bSignal = signalById.get(b.signalId);
+      return (aSignal?.signalCreatedAt ?? a.evaluatedAt) - (bSignal?.signalCreatedAt ?? b.evaluatedAt)
+        || (aSignal?.marketEpisodeId ?? a.signalId).localeCompare(bSignal?.marketEpisodeId ?? b.signalId);
+    });
+
+    for (const result of orderedResults) {
       const signal = signalById.get(result.signalId) ?? null;
+      const preexistingKey = signal?.marketEpisodeId ? `${experiment.experimentId}:${signal.marketEpisodeId}` : null;
+      if (preexistingKey !== null && existingKeys.has(preexistingKey)) {
+        if (recordDuplicates && await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'DUPLICATE_MARKET_EPISODE', preexistingKey)) duplicates += 1;
+        continue;
+      }
       const decision = signal ? decisionById.get(signal.decisionId) ?? null : null;
       const entry = decision ? entryByDecisionId.get(decision.decisionId) ?? null : null;
-      const eligibility = this.eligibility(experiment, decision, entry, signal, result);
+      const eligibility = this.eligibility(experiment, tickById, exitTickAnchors, decision, entry, signal, result);
       if (eligibility !== null) {
         if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, eligibility.reason, eligibility.detail)) excluded += 1;
         continue;
       }
       if (!signal || !decision || !entry || entry.resolutionStatus !== 'RESOLVED' || result.resolutionStatus !== 'RESOLVED' || result.directionalOutcome === 'FLAT') continue;
       const key = `${experiment.experimentId}:${signal.marketEpisodeId}`;
-      if (existingKeys.has(key)) {
+      if (candidateKeys.has(key)) {
         if (recordDuplicates && await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'DUPLICATE_MARKET_EPISODE', key)) duplicates += 1;
         continue;
       }
-      if (evaluation) {
-        const beforeOrAtCutoff = signal.signalCreatedAt < evaluation.sampleCutoffSignalCreatedAt || (signal.signalCreatedAt === evaluation.sampleCutoffSignalCreatedAt && signal.marketEpisodeId <= evaluation.sampleCutoffMarketEpisodeId);
-        if (beforeOrAtCutoff) {
-          if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'LATE_PRE_CUTOFF_EPISODE', key)) excluded += 1;
-          await this.invalidateOnce(experiment.experimentId, result.evaluatedAt, 'LATE_PRE_CUTOFF_EPISODE', key);
-        } else if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'POST_CONFIRMATORY_PERIOD', key)) excluded += 1;
-        continue;
-      }
+
       const episode: Phase4EpisodeRecord = {
         episodeSchemaVersion: '2', key, experimentId: experiment.experimentId, marketEpisodeId: signal.marketEpisodeId, signalId: signal.signalId, decisionId: decision.decisionId,
         entryResolutionId: entry.entryResolutionId, sourceDatasetId, sourceGitCommit, canonicalAssetId: 'EURUSDOTC', sourceFeedId: signal.entryMarketSourceIdentity.feedId,
@@ -289,15 +319,53 @@ export class Phase4ValidationEngine {
         contributingStrategyIds: [...new Set(decision.strategySnapshots.filter((strategy) => strategy.direction === signal.direction).map((strategy) => strategy.strategyId))].sort(),
         expiryTimingErrorMs: result.expiryTimingErrorMs, directionalOutcome: result.directionalOutcome,
       };
-      await this.repository.appendEpisode(episode); existingKeys.add(key); accepted += 1;
+
+      if (evaluation) {
+        const beforeOrAtCutoff = episode.signalCreatedAt < evaluation.sampleCutoffSignalCreatedAt
+          || (episode.signalCreatedAt === evaluation.sampleCutoffSignalCreatedAt && episode.marketEpisodeId <= evaluation.sampleCutoffMarketEpisodeId);
+        if (beforeOrAtCutoff) {
+          if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'LATE_PRE_CUTOFF_EPISODE', key)) excluded += 1;
+          await this.invalidateOnce(experiment.experimentId, result.evaluatedAt, 'LATE_PRE_CUTOFF_EPISODE', key);
+        } else if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'POST_CONFIRMATORY_PERIOD', key)) excluded += 1;
+        continue;
+      }
+
+      if (existingExperimentEpisodes.length >= experiment.targetSampleSize) {
+        const cutoff = existingExperimentEpisodes[experiment.targetSampleSize - 1];
+        if (!cutoff) throw new Error('Phase 4 provisional confirmatory cutoff unavailable');
+        const beforeOrAtCutoff = episode.signalCreatedAt < cutoff.signalCreatedAt
+          || (episode.signalCreatedAt === cutoff.signalCreatedAt && episode.marketEpisodeId <= cutoff.marketEpisodeId);
+        if (beforeOrAtCutoff) {
+          if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'LATE_PRE_CUTOFF_EPISODE', key)) excluded += 1;
+          await this.invalidateOnce(experiment.experimentId, result.evaluatedAt, 'LATE_PRE_CUTOFF_EPISODE', key);
+        } else if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, 'POST_CONFIRMATORY_PERIOD', key)) excluded += 1;
+        continue;
+      }
+
+      candidateKeys.add(key);
+      eligibleCandidates.push({ result, signal, decision, entry, key, episode });
     }
+
+    eligibleCandidates.sort((a, b) => a.episode.signalCreatedAt - b.episode.signalCreatedAt || a.episode.marketEpisodeId.localeCompare(b.episode.marketEpisodeId));
+    let remaining = Math.max(0, experiment.targetSampleSize - existingExperimentEpisodes.length);
+    for (const candidate of eligibleCandidates) {
+      if (remaining > 0) {
+        await this.repository.appendEpisode(candidate.episode);
+        existingKeys.add(candidate.key);
+        accepted += 1;
+        remaining -= 1;
+        continue;
+      }
+      if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, candidate.signal, candidate.result, 'POST_CONFIRMATORY_PERIOD', candidate.key)) excluded += 1;
+    }
+
     const auditTime = results.reduce((latest, item) => Math.max(latest, item.evaluatedAt), experiment.prospectiveStartedAt);
     if (accepted > 0) await this.appendAudit(experiment.experimentId, 'EPISODES_ACCEPTED', auditTime, `${sourceDatasetId}: ${accepted}`);
     if (excluded > 0) await this.appendAudit(experiment.experimentId, 'EPISODES_REJECTED', auditTime, `${sourceDatasetId}: ${excluded}`);
     return { accepted, excluded, duplicates };
   }
 
-  private eligibility(experiment: Phase4Experiment, decision: DecisionRecord | null, entry: EntryResolutionRecord | null, signal: SignalRecord | null, result: ResultRecord): { reason: Phase4ExclusionReason; detail: string | null } | null {
+  private eligibility(experiment: Phase4Experiment, tickById: Map<string, Tick>, exitTickAnchors: Set<string>, decision: DecisionRecord | null, entry: EntryResolutionRecord | null, signal: SignalRecord | null, result: ResultRecord): { reason: Phase4ExclusionReason; detail: string | null } | null {
     if (!signal) return { reason: 'MISSING_SIGNAL', detail: result.signalId };
     if (!decision) return { reason: 'MISSING_DECISION', detail: signal.decisionId };
     if (!entry) return { reason: 'MISSING_ENTRY_RESOLUTION', detail: signal.decisionId };
@@ -317,9 +385,13 @@ export class Phase4ValidationEngine {
     if (entry.entryDelayMs < 0 || entry.referenceEntryTimestamp - entry.decisionPublishedAt !== entry.entryDelayMs || entry.decisionPublishedAt !== decision.decisionPublishedAt || signal.signalCreatedAt !== signal.referenceEntryTimestamp) return { reason: 'REFERENCE_TIMELINE_MISMATCH', detail: 'entry timeline' };
     if (signal.expectedExpiryTimestamp !== signal.referenceEntryTimestamp + signal.expirationSeconds * 1_000) return { reason: 'REFERENCE_TIMELINE_MISMATCH', detail: 'expected expiry' };
     if (decision.sourceFeedId === null || decision.sourceFeedId !== signal.entryMarketSourceIdentity.feedId || !sameMarketSource(entry.entryMarketSourceIdentity, signal.entryMarketSourceIdentity)) return { reason: 'MARKET_SOURCE_MISMATCH', detail: 'entry source' };
+    const entryTick = tickById.get(entry.entryTickId);
+    if (!entryTick || entryTick.eventTimestampEpochMs !== entry.referenceEntryTimestamp || entryTick.price !== entry.referenceEntryPrice || entryTick.pageSessionId !== entry.entryPageSessionId || entryTick.integrity !== 'VALID' || entryTick.sourceQuality !== 'VERIFIED' || !sameMarketSource(entryTick.marketSourceIdentity, entry.entryMarketSourceIdentity)) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `entry:${entry.entryTickId}` };
     if (result.evaluationMode !== 'REFERENCE_FEED') return { reason: 'NON_REFERENCE_FEED_EVALUATION', detail: result.evaluationMode };
     if (result.resolutionStatus !== 'RESOLVED') return { reason: 'RESULT_UNRESOLVED', detail: result.unresolvedReason };
     if (result.entryPageSessionId !== signal.entryPageSessionId || !sameMarketSource(signal.entryMarketSourceIdentity, result.exitMarketSourceIdentity)) return { reason: 'MARKET_SOURCE_MISMATCH', detail: 'exit source' };
+    const exitAnchor = marketTickAnchorKey(result.exitMarketSourceIdentity, result.exitPageSessionId, result.referenceExitTimestamp, result.referenceExitPrice);
+    if (!exitTickAnchors.has(exitAnchor)) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `exit:${result.signalId}` };
     if (!Number.isInteger(result.expiryTimingErrorMs) || result.expiryTimingErrorMs < 0) return { reason: 'INVALID_EXPIRY_TIMING', detail: String(result.expiryTimingErrorMs) };
     if (result.referenceExitTimestamp - signal.expectedExpiryTimestamp !== result.expiryTimingErrorMs || result.evaluatedAt < result.referenceExitTimestamp) return { reason: 'REFERENCE_TIMELINE_MISMATCH', detail: 'settlement timeline' };
     if (result.expiryTimingErrorMs > experiment.strictSettlementMaxDelayMs) return { reason: 'EXPIRY_TIMING_OUTSIDE_STRICT_WINDOW', detail: String(result.expiryTimingErrorMs) };
@@ -343,11 +415,15 @@ export class Phase4ValidationEngine {
     await this.repository.appendAuditEvent({ auditEventSchemaVersion: '2', auditEventId: canonicalEntityHash('PHASE4_AUDIT', 2, input), ...input });
   }
 
-  private async retireLegacyExperimentIfPresent(nowMs: number): Promise<void> {
+  private async retireLegacyExperimentsIfPresent(nowMs: number): Promise<void> {
     const snapshot = await this.repository.snapshot();
-    if (!snapshot.experiments.some((item) => item.experimentId === PHASE4_RETIRED_EXPERIMENT_ID)) return;
-    if (snapshot.auditEvents.some((event) => event.experimentId === PHASE4_RETIRED_EXPERIMENT_ID && event.eventType === 'EXPERIMENT_INVALIDATED')) return;
-    await this.appendAudit(PHASE4_RETIRED_EXPERIMENT_ID, 'EXPERIMENT_INVALIDATED', nowMs, 'VALIDATION_AUTHORITY_NOT_FULLY_FROZEN: retained historical experiment; observed outcomes must not be reused as confirmatory evidence');
+    for (const experimentId of PHASE4_RETIRED_EXPERIMENT_IDS) {
+      if (!snapshot.experiments.some((item) => item.experimentId === experimentId)) continue;
+      if (snapshot.auditEvents.some((event) => event.experimentId === experimentId && event.eventType === 'EXPERIMENT_INVALIDATED')) continue;
+      const builtin = PHASE4_BUILTIN_HISTORICAL_INVALIDATIONS.find((item) => item.experimentId === experimentId);
+      const reason = builtin?.invalidationDetail ?? 'TECHNICAL_AUDIT_INVALIDATION';
+      await this.appendAudit(experimentId, 'EXPERIMENT_INVALIDATED', nowMs, `${reason}: retained historical experiment; observed outcomes must not be reused as confirmatory evidence`);
+    }
   }
 
   private async invalidateOnce(experimentId: string, occurredAt: number, reason: Phase4ExclusionReason, detail: string): Promise<void> {
@@ -380,23 +456,38 @@ export class Phase4ValidationEngine {
   }
 
   private historicalSummaries(snapshot: Phase4Snapshot): Phase4HistoricalExperimentSummary[] {
-    const retired = snapshot.experiments.filter((item) => item.experimentId === PHASE4_RETIRED_EXPERIMENT_ID);
-    return retired.map((experiment) => {
+    const summaries = new Map<string, Phase4HistoricalExperimentSummary>();
+    for (const builtin of PHASE4_BUILTIN_HISTORICAL_INVALIDATIONS) {
+      summaries.set(builtin.experimentId, { ...builtin, status: 'INVALIDATED' });
+    }
+    for (const experiment of snapshot.experiments.filter((item) => PHASE4_RETIRED_EXPERIMENT_IDS.includes(item.experimentId as typeof PHASE4_RETIRED_EXPERIMENT_IDS[number]))) {
       const episodes = snapshot.episodes.filter((item) => item.experimentId === experiment.experimentId);
       const correct = episodes.filter((item) => item.directionalOutcome === 'CORRECT').length;
       const invalidation = snapshot.auditEvents.filter((item) => item.experimentId === experiment.experimentId && item.eventType === 'EXPERIMENT_INVALIDATED').sort((a, b) => b.occurredAt - a.occurredAt)[0];
-      return { experimentId: experiment.experimentId, status: 'INVALIDATED', acceptedEpisodes: episodes.length, correct, incorrect: episodes.length - correct, accuracy: episodes.length === 0 ? null : correct / episodes.length, invalidationDetail: invalidation?.detail ?? 'VALIDATION_AUTHORITY_NOT_FULLY_FROZEN' };
-    });
+      const builtin = PHASE4_BUILTIN_HISTORICAL_INVALIDATIONS.find((item) => item.experimentId === experiment.experimentId);
+      summaries.set(experiment.experimentId, {
+        experimentId: experiment.experimentId,
+        status: 'INVALIDATED',
+        acceptedEpisodes: episodes.length > 0 ? episodes.length : (builtin?.acceptedEpisodes ?? 0),
+        correct: episodes.length > 0 ? correct : (builtin?.correct ?? 0),
+        incorrect: episodes.length > 0 ? episodes.length - correct : (builtin?.incorrect ?? 0),
+        accuracy: episodes.length > 0 ? correct / episodes.length : (builtin?.accuracy ?? null),
+        invalidationDetail: invalidation?.detail ?? builtin?.invalidationDetail ?? 'TECHNICAL_AUDIT_INVALIDATION',
+      });
+    }
+    return [...summaries.values()].sort((a, b) => a.experimentId.localeCompare(b.experimentId));
   }
 
   private reportFromSnapshot(snapshot: Phase4Snapshot, experiment: Phase4Experiment | null): Phase4Report {
     const historicalInvalidatedExperiments = this.historicalSummaries(snapshot);
     const make = (base: Omit<Phase4Report, 'reportId'>): Phase4Report => ({ ...base, reportId: canonicalEntityHash('PHASE4_REPORT', 2, base) });
     if (!experiment) return make({ reportSchemaVersion: '2', experiment: null, status: 'NOT_STARTED', prospectiveUniqueStrictEpisodes: 0, targetSampleSize: PHASE4_TARGET_SAMPLE_SIZE, remaining: PHASE4_TARGET_SAMPLE_SIZE, correct: 0, incorrect: 0, accuracy: null, wilson95Low: null, wilson95High: null, wilson99Low: null, wilson99High: null, exactBinomialPValue: null, confirmatoryEligible: false, confirmatoryEvaluation: null, integrityGate: 'PENDING', stabilityGate: 'PENDING', stabilityBlocks: [], importedDatasetCount: 0, duplicateEpisodeCount: 0, exclusionsByReason: {}, timeframePerformance: [], directionPerformance: [], structureRegimePerformance: [], volatilityRegimePerformance: [], contributingStrategyPerformance: [], historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
-    const episodes = sortedEpisodes(snapshot.episodes.filter((episode) => episode.experimentId === experiment.experimentId)); const correct = episodes.filter((episode) => episode.directionalOutcome === 'CORRECT').length;
+    const allEpisodes = sortedEpisodes(snapshot.episodes.filter((episode) => episode.experimentId === experiment.experimentId));
+    const episodes = allEpisodes.slice(0, experiment.targetSampleSize);
+    const correct = episodes.filter((episode) => episode.directionalOutcome === 'CORRECT').length;
     const interval95 = wilsonInterval(correct, episodes.length, 0.95); const interval99 = wilsonInterval(correct, episodes.length, 0.99); const pValue = exactOneSidedBinomialPValue(correct, episodes.length, 0.5);
     const evaluation = snapshot.evaluations.find((item) => item.experimentId === experiment.experimentId) ?? null; const invalidated = snapshot.auditEvents.some((event) => event.experimentId === experiment.experimentId && event.eventType === 'EXPERIMENT_INVALIDATED');
     const exclusionsByReason: Partial<Record<Phase4ExclusionReason, number>> = {}; for (const exclusion of snapshot.exclusions.filter((item) => item.experimentId === experiment.experimentId)) exclusionsByReason[exclusion.reason] = (exclusionsByReason[exclusion.reason] ?? 0) + 1;
-    return make({ reportSchemaVersion: '2', experiment, status: invalidated ? 'INVALIDATED' : evaluation?.finalStatus ?? 'COLLECTING', prospectiveUniqueStrictEpisodes: episodes.length, targetSampleSize: experiment.targetSampleSize, remaining: Math.max(0, experiment.targetSampleSize - episodes.length), correct, incorrect: episodes.length - correct, accuracy: episodes.length === 0 ? null : correct / episodes.length, wilson95Low: interval95?.low ?? null, wilson95High: interval95?.high ?? null, wilson99Low: interval99?.low ?? null, wilson99High: interval99?.high ?? null, exactBinomialPValue: pValue, confirmatoryEligible: episodes.length >= experiment.targetSampleSize && !invalidated, confirmatoryEvaluation: evaluation, integrityGate: invalidated ? 'FAIL' : 'PASS', stabilityGate: evaluation?.stabilityGate ?? 'PENDING', stabilityBlocks: stabilityBlocks(episodes.slice(0, experiment.targetSampleSize)), importedDatasetCount: snapshot.datasets.filter((dataset) => dataset.experimentId === experiment.experimentId).length, duplicateEpisodeCount: exclusionsByReason.DUPLICATE_MARKET_EPISODE ?? 0, exclusionsByReason, timeframePerformance: performanceSlice(episodes, (episode) => [episode.timeframe]), directionPerformance: performanceSlice(episodes, (episode) => [episode.direction]), structureRegimePerformance: performanceSlice(episodes, (episode) => [episode.structureRegime]), volatilityRegimePerformance: performanceSlice(episodes, (episode) => [episode.volatilityRegime]), contributingStrategyPerformance: performanceSlice(episodes, (episode) => episode.contributingStrategyIds), historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
+    return make({ reportSchemaVersion: '2', experiment, status: invalidated ? 'INVALIDATED' : evaluation?.finalStatus ?? 'COLLECTING', prospectiveUniqueStrictEpisodes: episodes.length, targetSampleSize: experiment.targetSampleSize, remaining: Math.max(0, experiment.targetSampleSize - episodes.length), correct, incorrect: episodes.length - correct, accuracy: episodes.length === 0 ? null : correct / episodes.length, wilson95Low: interval95?.low ?? null, wilson95High: interval95?.high ?? null, wilson99Low: interval99?.low ?? null, wilson99High: interval99?.high ?? null, exactBinomialPValue: pValue, confirmatoryEligible: episodes.length >= experiment.targetSampleSize && !invalidated, confirmatoryEvaluation: evaluation, integrityGate: invalidated ? 'FAIL' : 'PASS', stabilityGate: evaluation?.stabilityGate ?? 'PENDING', stabilityBlocks: stabilityBlocks(episodes), importedDatasetCount: snapshot.datasets.filter((dataset) => dataset.experimentId === experiment.experimentId).length, duplicateEpisodeCount: exclusionsByReason.DUPLICATE_MARKET_EPISODE ?? 0, exclusionsByReason, timeframePerformance: performanceSlice(episodes, (episode) => [episode.timeframe]), directionPerformance: performanceSlice(episodes, (episode) => [episode.direction]), structureRegimePerformance: performanceSlice(episodes, (episode) => [episode.structureRegime]), volatilityRegimePerformance: performanceSlice(episodes, (episode) => [episode.volatilityRegime]), contributingStrategyPerformance: performanceSlice(episodes, (episode) => episode.contributingStrategyIds), historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
   }
 }

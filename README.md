@@ -296,3 +296,11 @@ v1.9.1 preserves the frozen v1.8.2 signal/evaluation core and hardens only the p
 The build now freezes three independent authorities: the signal scientific-core SHA-256, the Phase 4 validation-authority SHA-256, and the Phase 4 protocol SHA-256. Scientific datasets use schema v10 and Phase 4 imports require clean `GIT` provenance, matching core/authority/protocol hashes, manifest/body consistency, canonical checksum/ID integrity, and semantic linkage across decision, resolved entry, signal, expiry and result. Phase 4 evidence export is now a canonical checksum-verifiable bundle containing accepted episodes, exclusions, audit events, imported-dataset records and evaluations.
 
 See `phase4_protocol_v2.md` and `validation_report_v1.9.1.md`.
+
+## v1.9.2 — Phase 4 fixed-N and raw-evidence hardening
+
+v1.9.2 preserves the frozen v1.8.2 signal/evaluation core and changes only the Phase 4 validation layer. `P4-EURUSDOTC-V182-002` is retained as historical invalidated evidence (10 episodes, 4 correct, 6 incorrect) because the v1.9.1 validator could persist more than 500 accepted episodes when a batch crossed the fixed-N boundary. The new confirmatory experiment is `P4-EURUSDOTC-V182-003`.
+
+The Phase 4 accepted sample is now hard-capped at exactly 500. Batch/live/import overflow is recorded as `POST_CONFIRMATORY_PERIOD`; reports, Wilson intervals, p-values, stability blocks, subgroup metrics and evidence bundles use only the fixed confirmatory sample. Imports are additionally bound to the exact frozen Git commit and eligible entry/exit settlements must anchor to raw VERIFIED/VALID ticks. Known invalidated summaries for P4-001 and P4-002 are built into the frozen authority so they survive a fresh IndexedDB.
+
+See `phase4_protocol_v3.md` and `validation_report_v1.9.2.md`.

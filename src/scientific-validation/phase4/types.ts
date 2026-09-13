@@ -1,9 +1,13 @@
 import type { SignalDirection } from '../../common/models/journal-types.js';
 import type { StructureRegime, Timeframe, VolatilityRegime } from '../../common/models/types.js';
 
-export const PHASE4_PROTOCOL_VERSION = '2' as const;
-export const PHASE4_EXPERIMENT_ID = 'P4-EURUSDOTC-V182-002' as const;
-export const PHASE4_RETIRED_EXPERIMENT_ID = 'P4-EURUSDOTC-V182-001' as const;
+export const PHASE4_PROTOCOL_VERSION = '3' as const;
+export const PHASE4_EXPERIMENT_ID = 'P4-EURUSDOTC-V182-003' as const;
+export const PHASE4_RETIRED_EXPERIMENT_IDS = ['P4-EURUSDOTC-V182-001', 'P4-EURUSDOTC-V182-002'] as const;
+export const PHASE4_BUILTIN_HISTORICAL_INVALIDATIONS = [
+  { experimentId: 'P4-EURUSDOTC-V182-001', acceptedEpisodes: 10, correct: 3, incorrect: 7, accuracy: 0.3, invalidationDetail: 'VALIDATION_AUTHORITY_NOT_FULLY_FROZEN' },
+  { experimentId: 'P4-EURUSDOTC-V182-002', acceptedEpisodes: 10, correct: 4, incorrect: 6, accuracy: 0.4, invalidationDetail: 'FIXED_N_BATCH_BOUNDARY_DEFECT' },
+] as const;
 export const PHASE4_BASELINE_APP_VERSION = '1.8.2' as const;
 export const PHASE4_BASELINE_STRATEGY_GIT_COMMIT = '386e83db0a44832c589080b9f7be9215d6a057a4' as const;
 export const PHASE4_BASELINE_SCIENTIFIC_CORE_SHA256 = 'ca9771c8c58a53c47894d4cf0966fc10629bcd48a80ff4af1519e1842c12f1db' as const;
@@ -90,7 +94,9 @@ export type Phase4ExclusionReason =
   | 'VALIDATION_AUTHORITY_MISMATCH'
   | 'PHASE4_PROTOCOL_MISMATCH'
   | 'LATE_PRE_CUTOFF_EPISODE'
-  | 'VALIDATION_AUTHORITY_NOT_FULLY_FROZEN';
+  | 'VALIDATION_AUTHORITY_NOT_FULLY_FROZEN'
+  | 'FIXED_N_BATCH_BOUNDARY_DEFECT'
+  | 'RAW_TICK_ANCHOR_MISMATCH';
 
 export interface Phase4EpisodeRecord {
   episodeSchemaVersion: '2';

@@ -1,3 +1,5 @@
+> **Historical protocol v2 — superseded by `phase4_protocol_v3.md`. Experiment `P4-EURUSDOTC-V182-002` is retained but technically invalidated after the fixed-N boundary audit.**
+
 # Phase 4 — Prospective Statistical Validation Protocol v2
 
 Status: implementation hardened after independent pre-freeze audit. The previous experiment `P4-EURUSDOTC-V182-001` is retained as historical evidence and is technically invalidated because the Phase 4 validation authority itself was not cryptographically frozen. Its observed 3/10 outcome must not be erased or reused as confirmatory evidence.

@@ -3,7 +3,8 @@ import { test } from 'node:test';
 import { canonicalEntityHash, canonicalJson } from '../src/common/hashing/canonical-hash.js';
 import { sha256 } from '../src/common/hashing/sha256.js';
 import type { ScientificDataset } from '../src/common/models/dataset-types.js';
-import type { DecisionRecord, EntryResolutionRecord, ResultRecord, SignalRecord } from '../src/common/models/journal-types.js';
+import type { DecisionRecord, ResolvedEntryRecord, ResultRecord, SignalRecord } from '../src/common/models/journal-types.js';
+import type { Tick } from '../src/common/models/types.js';
 import type { JournalSnapshot } from '../src/service-worker/storage/journal-repository.js';
 import { Phase4ValidationEngine } from '../src/scientific-validation/phase4/engine.js';
 import { MemoryPhase4Repository } from '../src/scientific-validation/phase4/repository.js';
@@ -39,7 +40,7 @@ const source = {
 };
 
 const build: Phase4BuildIdentity = {
-  appVersion: '1.9.1',
+  appVersion: '1.9.2',
   buildId: 'test-build',
   sourceTreeSha256: 'a'.repeat(64),
   scientificCoreSha256: PHASE4_BASELINE_SCIENTIFIC_CORE_SHA256,
@@ -56,11 +57,11 @@ function emptySnapshot(): JournalSnapshot {
 
 function decision(id: string, marketEpisodeId: string, createdAt: number, configHash = 'frozen-config'): DecisionRecord {
   return {
-    decisionSchemaVersion: '5', decisionId: id, decisionGranularityKey: `granularity-${id}`, executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe: '5s', decisionComputedAt: createdAt - 5, decisionPublishedAt: createdAt - 5, alertPublishedAt: null, evaluationWindowId: `window-${id}`, candleStartTimestamp: createdAt - 5_000, candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.6, calibratedProbability: null, structureRegime: 'RANGE', volatilityRegime: 'NORMAL', strategySnapshots: [{ strategyId: 'MOMENTUM_V1', strategyVersion: '1', direction: 'CALL', rawScore: 0.6, evidence: [], blockers: [] }], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceFeedId: source.feedId, sourceProtocolVerificationId: 'TEST_PROTOCOL', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [], expirationSeconds: 60, configHash, configSnapshot: {}, appVersion: '1.9.1', marketEpisodeId, arbitrationStatus: 'PRIMARY', createdAt,
+    decisionSchemaVersion: '5', decisionId: id, decisionGranularityKey: `granularity-${id}`, executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe: '5s', decisionComputedAt: createdAt - 5, decisionPublishedAt: createdAt - 5, alertPublishedAt: null, evaluationWindowId: `window-${id}`, candleStartTimestamp: createdAt - 5_000, candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.6, calibratedProbability: null, structureRegime: 'RANGE', volatilityRegime: 'NORMAL', strategySnapshots: [{ strategyId: 'MOMENTUM_V1', strategyVersion: '1', direction: 'CALL', rawScore: 0.6, evidence: [], blockers: [] }], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceFeedId: source.feedId, sourceProtocolVerificationId: 'TEST_PROTOCOL', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [], expirationSeconds: 60, configHash, configSnapshot: {}, appVersion: '1.9.2', marketEpisodeId, arbitrationStatus: 'PRIMARY', createdAt,
   };
 }
 
-function entry(decisionId: string, createdAt: number): EntryResolutionRecord {
+function entry(decisionId: string, createdAt: number): ResolvedEntryRecord {
   return {
     resolutionStatus: 'RESOLVED', entryResolutionSchemaVersion: '2', entryResolutionId: `entry-${decisionId}`, decisionId, referenceEntryPrice: 1.1, referenceEntryTimestamp: createdAt, decisionPublishedAt: createdAt - 5, entryDelayMs: 5, entryReferencePolicy: 'FIRST_TICK_AFTER_ALERT', entryMarketSourceIdentity: source, entryPageSessionId: 'page-1', entryTickId: `tick-${decisionId}`, resolvedAt: createdAt,
   };
@@ -78,14 +79,29 @@ function result(signalId: string, evaluatedAt: number, outcome: 'CORRECT' | 'INC
   };
 }
 
+function tick(id: string, timestamp: number, price: number): Tick {
+  return {
+    tickSchemaVersion: '4', tickId: id, marketSourceIdentity: source, pageSessionId: 'page-1', connectionId: 'test-connection', sequence: timestamp,
+    sourceTimestampEpochMs: null, receivedAtEpochMs: timestamp, receivedAtMonotonicMs: timestamp, eventTimestampEpochMs: timestamp,
+    timestampBasis: 'LOCAL_RECEIPT', sourceClockSynchronized: false, observedTimestampDeltaMs: null, transportLatencyMs: null,
+    price, integrity: 'VALID', sourceQuality: 'VERIFIED', protocolVerificationId: 'TEST_PROTOCOL',
+  };
+}
+
 function withEpisode(snapshot: JournalSnapshot, ordinal: number, createdAt: number, outcome: 'CORRECT' | 'INCORRECT' = 'CORRECT', timing = 100, configHash = 'frozen-config'): void {
   const episodeId = `episode-${ordinal.toString().padStart(4, '0')}`;
   const decisionId = `decision-${ordinal}`;
   const signalId = `signal-${ordinal}`;
-  snapshot.decisions.push(decision(decisionId, episodeId, createdAt, configHash));
-  snapshot.entryResolutions.push(entry(decisionId, createdAt));
-  snapshot.signals.push(signal(signalId, decisionId, episodeId, createdAt));
-  snapshot.results.push(result(signalId, createdAt + 60_000 + timing, outcome, timing));
+  const decisionRecord = decision(decisionId, episodeId, createdAt, configHash);
+  const entryRecord = entry(decisionId, createdAt);
+  const signalRecord = signal(signalId, decisionId, episodeId, createdAt);
+  const resultRecord = result(signalId, createdAt + 60_000 + timing, outcome, timing);
+  snapshot.decisions.push(decisionRecord);
+  snapshot.entryResolutions.push(entryRecord);
+  snapshot.signals.push(signalRecord);
+  snapshot.results.push(resultRecord);
+  snapshot.ticks.push(tick(entryRecord.entryTickId, entryRecord.referenceEntryTimestamp, entryRecord.referenceEntryPrice));
+  if (resultRecord.resolutionStatus === 'RESOLVED') snapshot.ticks.push(tick(`exit-${signalId}`, resultRecord.referenceExitTimestamp, resultRecord.referenceExitPrice));
 }
 
 async function startedEngine(startAt = 10_000): Promise<{ engine: Phase4ValidationEngine; snapshot: JournalSnapshot }> {
@@ -104,7 +120,7 @@ function datasetFrom(snapshot: JournalSnapshot, configHash: string, createdAt = 
   const manifestBase = {
     datasetSchemaVersion: '10' as const,
     createdAt,
-    appVersion: '1.9.1',
+    appVersion: '1.9.2',
     buildId: build.buildId,
     sourceTreeSha256: build.sourceTreeSha256,
     scientificCoreSha256: build.scientificCoreSha256,
@@ -120,7 +136,7 @@ function datasetFrom(snapshot: JournalSnapshot, configHash: string, createdAt = 
     latestTickAgeMsAtExport: 0,
     assetFeedHealthAtExport: [],
     captureTransportAtExport: { transportSchemaVersion: '4' as const, tabId: null, pageSessionId: null, connected: true, visibility: 'hidden' as const, frozen: false, discarded: false, autoDiscardable: false, lastSemanticEventAt: 999_999, lastLifecycleEventAt: null, lastConnectionEventAt: null, lastLifecycleReason: null, shadowConnected: true, shadowPrimary: true, shadowState: 'STREAMING' as const, shadowEndpointHost: source.feedId, shadowReconnectAttempts: 0, shadowConsecutiveNamespaceRejects: 0, shadowCircuitOpen: false, shadowLastMessageAt: 999_999, shadowLastPriceAt: 999_999, shadowLastErrorReason: null, shadowLastCommandAt: null, mitigation: 'MAIN_WORLD_NATIVE_SHADOW_RUNTIME_PORT_WATCHDOG_AUTO_DISCARD_DISABLED' as const },
-    tickCount: 0, decisionCount: snapshot.decisions.length, rawCandidateDecisionCount: snapshot.decisions.length, marketEpisodeCount: snapshot.decisions.length, suppressedCorrelatedDecisionCount: 0, signalCount: snapshot.signals.length, resultCount: snapshot.results.length, continuityEventCount: 0, transportEventCount: 0, reconnectEventCount: 0, configHashes: [configHash], checksumSha256,
+    tickCount: snapshot.ticks.length, decisionCount: snapshot.decisions.length, rawCandidateDecisionCount: snapshot.decisions.length, marketEpisodeCount: snapshot.decisions.length, suppressedCorrelatedDecisionCount: 0, signalCount: snapshot.signals.length, resultCount: snapshot.results.length, continuityEventCount: 0, transportEventCount: 0, reconnectEventCount: 0, configHashes: [configHash], checksumSha256,
   };
   const manifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 10, manifestBase) };
   return { manifest, ...body };
@@ -142,8 +158,14 @@ test('Phase 4 excludes pre-period, flat and >1000ms outcomes while accepting 100
   const flatDecision = decision('decision-flat', 'episode-flat', 10_300);
   snapshot.decisions.push(flatDecision);
   snapshot.entryResolutions.push(entry(flatDecision.decisionId, 10_300));
-  snapshot.signals.push(signal('signal-flat', flatDecision.decisionId, 'episode-flat', 10_300));
-  snapshot.results.push(result('signal-flat', 70_400, 'FLAT', 100));
+  const flatEntry = entry(flatDecision.decisionId, 10_300);
+  const flatSignal = signal('signal-flat', flatDecision.decisionId, 'episode-flat', 10_300);
+  const flatResult = result('signal-flat', 70_400, 'FLAT', 100);
+  snapshot.entryResolutions[snapshot.entryResolutions.length - 1] = flatEntry;
+  snapshot.signals.push(flatSignal);
+  snapshot.results.push(flatResult);
+  snapshot.ticks.push(tick(flatEntry.entryTickId, flatEntry.referenceEntryTimestamp, flatEntry.referenceEntryPrice));
+  if (flatResult.resolutionStatus === 'RESOLVED') snapshot.ticks.push(tick('exit-signal-flat', flatResult.referenceExitTimestamp, flatResult.referenceExitPrice));
   const report = await engine.syncLiveJournal(snapshot, build, 100_000);
   assert.equal(report.prospectiveUniqueStrictEpisodes, 1);
   assert.equal(report.correct, 1);
@@ -270,7 +292,9 @@ test('unresolved result is excluded and never enters the directional denominator
   const d = decision('decision-unresolved', 'episode-unresolved', 12_000);
   const s = signal('signal-unresolved', d.decisionId, 'episode-unresolved', 12_000);
   snapshot.decisions.push(d);
-  snapshot.entryResolutions.push(entry(d.decisionId, 12_000));
+  const unresolvedEntry = entry(d.decisionId, 12_000);
+  snapshot.entryResolutions.push(unresolvedEntry);
+  snapshot.ticks.push(tick(unresolvedEntry.entryTickId, unresolvedEntry.referenceEntryTimestamp, unresolvedEntry.referenceEntryPrice));
   snapshot.signals.push(s);
   snapshot.results.push({
     resolutionStatus: 'UNRESOLVED', resultSchemaVersion: '3', resultId: 'result-unresolved', signalId: s.signalId, evaluationMode: 'REFERENCE_FEED', referenceExitPrice: null, referenceExitTimestamp: null, expiryTimingErrorMs: null, priceOutcome: 'UNRESOLVED', directionalOutcome: 'UNRESOLVED', economicOutcome: 'UNKNOWN', economicReturn: null, economicEvaluationReason: 'RESULT_UNRESOLVED', settlementMetadata: { settlementMetadataSchemaVersion: '2', confidence: 'UNKNOWN', source: null, verifiedAt: null }, exitMarketSourceIdentity: null, unresolvedReason: 'DATA_UNAVAILABLE', evaluatedAt: 80_000,
@@ -294,6 +318,14 @@ test('validation authority, protocol and clean GIT provenance are frozen after s
   assert.equal(report.status, 'INVALIDATED');
 });
 
+
+test('live collection is bound to the exact frozen Git commit', async () => {
+  const { engine, snapshot } = await startedEngine();
+  const report = await engine.syncLiveJournal(snapshot, { ...build, gitCommit: 'e'.repeat(40) }, 20_000);
+  assert.equal(report.status, 'INVALIDATED');
+  assert.equal(report.integrityGate, 'FAIL');
+});
+
 test('schema v10 import rejects dirty provenance and mismatched validation authority', async () => {
   const { engine } = await startedEngine();
   const snapshot = emptySnapshot();
@@ -309,6 +341,18 @@ test('schema v10 import rejects dirty provenance and mismatched validation autho
   const { datasetId: _authorityId, ...authorityManifestBase } = badAuthority.manifest;
   badAuthority.manifest.datasetId = canonicalEntityHash('DATASET', 10, authorityManifestBase);
   await expectRejects(() => engine.importDatasetJson(JSON.stringify(badAuthority), 300_000), /validation authority/i);
+});
+
+
+test('schema v10 import is bound to the exact frozen Git commit', async () => {
+  const { engine } = await startedEngine();
+  const snapshot = emptySnapshot();
+  withEpisode(snapshot, 75, 12_500, 'CORRECT');
+  const dataset = datasetFrom(snapshot, 'frozen-config');
+  dataset.manifest.gitCommit = 'f'.repeat(40);
+  const { datasetId: _id, ...manifestBase } = dataset.manifest;
+  dataset.manifest.datasetId = canonicalEntityHash('DATASET', 10, manifestBase);
+  await expectRejects(() => engine.importDatasetJson(JSON.stringify(dataset), 300_000), /Git commit/i);
 });
 
 test('semantic eligibility rejects negative timing, timeline tampering and outcome tampering', async () => {
@@ -355,6 +399,74 @@ test('Phase 4 evidence bundle is canonical, complete and checksum-verifiable', a
   assert.equal(bundle.manifest.bodyChecksumSha256, sha256(new TextEncoder().encode(canonicalJson(body))));
   const { evidenceBundleId: _id, ...manifestBase } = bundle.manifest;
   assert.equal(bundle.manifest.evidenceBundleId, canonicalEntityHash('PHASE4_EVIDENCE_BUNDLE', 1, manifestBase));
+});
+
+
+test('fixed-N boundary caps live batch at exactly 500 and excludes overflow', async () => {
+  const { engine, snapshot } = await startedEngine();
+  for (let index = 0; index < 495; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  await engine.syncLiveJournal(snapshot, build, 100_000_000);
+  for (let index = 495; index < 505; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  const report = await engine.syncLiveJournal(snapshot, build, 200_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
+  assert.equal(report.correct, 500);
+  assert.equal(report.exclusionsByReason.POST_CONFIRMATORY_PERIOD, 5);
+  assert.equal(report.confirmatoryEvaluation?.confirmatorySampleSize, 500);
+});
+
+test('fixed-N boundary caps 499 plus ten at exactly 500', async () => {
+  const { engine, snapshot } = await startedEngine();
+  for (let index = 0; index < 499; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  await engine.syncLiveJournal(snapshot, build, 100_000_000);
+  for (let index = 499; index < 509; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'INCORRECT');
+  const report = await engine.syncLiveJournal(snapshot, build, 200_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
+  assert.equal(report.correct, 499);
+  assert.equal(report.incorrect, 1);
+  assert.equal(report.exclusionsByReason.POST_CONFIRMATORY_PERIOD, 9);
+});
+
+test('fixed-N boundary caps dataset import crossing 500', async () => {
+  const { engine, snapshot } = await startedEngine();
+  for (let index = 0; index < 499; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  await engine.syncLiveJournal(snapshot, build, 100_000_000);
+  const imported = emptySnapshot();
+  for (let index = 499; index < 509; index += 1) withEpisode(imported, index + 1, 20_000 + index * 70_000, 'INCORRECT');
+  const report = await engine.importDatasetJson(JSON.stringify(datasetFrom(imported, 'frozen-config', 200_000_000)), 200_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
+  assert.equal(report.exclusionsByReason.POST_CONFIRMATORY_PERIOD, 9);
+});
+
+test('raw tick anchoring rejects tampered entry and exit evidence', async () => {
+  const first = await startedEngine();
+  withEpisode(first.snapshot, 700, 20_000, 'CORRECT');
+  first.snapshot.ticks = first.snapshot.ticks.filter((item) => !item.tickId.startsWith('tick-decision-700'));
+  let report = await first.engine.syncLiveJournal(first.snapshot, build, 100_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.RAW_TICK_ANCHOR_MISMATCH, 1);
+
+  const second = await startedEngine(30_000);
+  withEpisode(second.snapshot, 701, 40_000, 'CORRECT');
+  const exitTick = second.snapshot.ticks.find((item) => item.tickId === 'exit-signal-701');
+  if (!exitTick) throw new Error('exit tick missing');
+  exitTick.price += 0.0001;
+  report = await second.engine.syncLiveJournal(second.snapshot, build, 200_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.RAW_TICK_ANCHOR_MISMATCH, 1);
+});
+
+test('historical invalidated experiments survive a fresh repository', async () => {
+  const { engine } = await startedEngine();
+  const report = await engine.report();
+  assert.equal(report.historicalInvalidatedExperiments.length, 2);
+  const first = report.historicalInvalidatedExperiments.find((item) => item.experimentId === 'P4-EURUSDOTC-V182-001');
+  const second = report.historicalInvalidatedExperiments.find((item) => item.experimentId === 'P4-EURUSDOTC-V182-002');
+  assert.equal(first?.correct, 3);
+  assert.equal(first?.incorrect, 7);
+  assert.ok(/VALIDATION_AUTHORITY_NOT_FULLY_FROZEN/.test(first?.invalidationDetail ?? ''));
+  assert.equal(second?.correct, 4);
+  assert.equal(second?.incorrect, 6);
+  assert.ok(/FIXED_N_BATCH_BOUNDARY_DEFECT/.test(second?.invalidationDetail ?? ''));
 });
 
 test('full source tree is frozen for live collection and dataset import', async () => {
