@@ -290,3 +290,7 @@ The remaining v1.8 acceptance test is narrower:
 5. confirm pending results are not marked `ASSET_FEED_LOST` solely because of those short reconnects;
 6. force or observe a gap above 15 seconds and confirm that it still starts a new epoch with fresh warmup;
 7. confirm no order event is ever sent by the extension.
+
+# Phase 4 — Prospective Statistical Validation (implemented in v1.9.0)
+
+The v1.8.2 scientific signal/evaluation core is frozen by SHA-256 and must not change during Phase 4. v1.9.0 adds an independent validation layer with a separate IndexedDB, prospective cutoff, dataset-v9 provenance, episode deduplication, exact one-sided binomial testing, Wilson 95/99 intervals, a 500-episode confirmatory sample, temporal stability blocks, explicit exclusion reasons, append-only audit events, and dashboard/report integration. Confirmatory PASS is impossible before 500 unique STRICT episodes and economic validation remains fail-closed while payout expiration is unbound.

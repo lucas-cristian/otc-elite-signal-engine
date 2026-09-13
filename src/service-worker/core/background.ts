@@ -6,12 +6,15 @@ import { createValidatedTick } from '../../common/validation/tick-factory.js';
 import { computeAnalytics } from '../evaluation/analytics.js';
 import { DatasetExporter } from '../export/dataset-exporter.js';
 import { IndexedDbJournal, openJournalDatabase } from '../storage/indexeddb-journal.js';
+import { Phase4ValidationEngine } from '../../scientific-validation/phase4/engine.js';
+import { IndexedDbPhase4Repository, openPhase4Database } from '../../scientific-validation/phase4/indexeddb-repository.js';
 import { DEFAULT_PIPELINE_CONFIG, QuantPipeline } from './quant-pipeline.js';
 
 interface BuildMetadata {
   appVersion: string;
   buildId: string;
   sourceTreeSha256: string | null;
+  scientificCoreSha256: string | null;
   gitCommit: string | null;
   gitWorkingTreeClean: boolean | null;
   gitProvenance: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
@@ -21,6 +24,7 @@ interface RuntimeContext {
   journal: IndexedDbJournal;
   pipeline: QuantPipeline;
   buildMetadata: BuildMetadata;
+  phase4: Phase4ValidationEngine;
 }
 
 const WATCHDOG_ALARM_NAME = 'otc-elite-data-health-watchdog';
@@ -85,27 +89,30 @@ async function loadBuildMetadata(): Promise<BuildMetadata> {
     const value: unknown = await response.json();
     if (!isRecord(value)) throw new Error('build metadata is not an object');
     const sourceTreeSha256 = value.sourceTreeSha256;
+    const scientificCoreSha256 = value.scientificCoreSha256;
     const gitCommit = value.gitCommit;
     const gitWorkingTreeClean = value.gitWorkingTreeClean;
     const gitProvenance = value.gitProvenance;
     if (typeof value.appVersion !== 'string' || typeof value.buildId !== 'string') throw new Error('build metadata identity missing');
     if (sourceTreeSha256 !== null && typeof sourceTreeSha256 !== 'string') throw new Error('invalid sourceTreeSha256');
+    if (scientificCoreSha256 !== null && typeof scientificCoreSha256 !== 'string') throw new Error('invalid scientificCoreSha256');
     if (gitCommit !== null && typeof gitCommit !== 'string') throw new Error('invalid gitCommit');
     if (gitWorkingTreeClean !== null && typeof gitWorkingTreeClean !== 'boolean') throw new Error('invalid gitWorkingTreeClean');
     if (gitProvenance !== 'GIT' && gitProvenance !== 'ENVIRONMENT' && gitProvenance !== 'UNAVAILABLE') throw new Error('invalid gitProvenance');
-    return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, gitCommit, gitWorkingTreeClean, gitProvenance };
+    return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, scientificCoreSha256, gitCommit, gitWorkingTreeClean, gitProvenance };
   } catch {
-    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, gitCommit: null, gitWorkingTreeClean: null, gitProvenance: 'UNAVAILABLE' };
+    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, scientificCoreSha256: null, gitCommit: null, gitWorkingTreeClean: null, gitProvenance: 'UNAVAILABLE' };
   }
 }
 
 const runtime = (async (): Promise<RuntimeContext> => {
-  const [db, buildMetadata] = await Promise.all([openJournalDatabase(), loadBuildMetadata()]);
+  const [db, phase4Db, buildMetadata] = await Promise.all([openJournalDatabase(), openPhase4Database(), loadBuildMetadata()]);
   const journal = new IndexedDbJournal(db);
+  const phase4 = new Phase4ValidationEngine(new IndexedDbPhase4Repository(phase4Db));
   const pipeline = new QuantPipeline(journal, { ...DEFAULT_PIPELINE_CONFIG, appVersion: buildMetadata.appVersion });
   await pipeline.initialize(Date.now());
   chrome.alarms.create(WATCHDOG_ALARM_NAME, { periodInMinutes: WATCHDOG_PERIOD_MINUTES });
-  return { journal, pipeline, buildMetadata };
+  return { journal, pipeline, buildMetadata, phase4 };
 })();
 
 function latestCaptureBase(): CaptureTransportSnapshot {
@@ -444,10 +451,11 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   if (message.type === 'GET_ANALYTICS') {
     const nowMs = Date.now();
     superviseShadowConnections(nowMs, false);
-    void runtime.then(async ({ journal, pipeline, buildMetadata }) => {
+    void runtime.then(async ({ journal, pipeline, buildMetadata, phase4 }) => {
       await pipeline.watchdog(nowMs);
       await flushTransportEvents();
       const [snapshot, health] = await Promise.all([journal.snapshot(), Promise.resolve(pipeline.getOperationalHealth(nowMs))]);
+      const phase4Report = await phase4.syncLiveJournal(snapshot, buildMetadata, nowMs);
       const analytics = computeAnalytics(
         snapshot,
         health,
@@ -465,15 +473,48 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         gitWorkingTreeClean: buildMetadata.gitWorkingTreeClean,
         gitProvenance: buildMetadata.gitProvenance,
         scientificBuildProvenanceReady: buildMetadata.gitCommit !== null && buildMetadata.gitProvenance !== 'UNAVAILABLE',
+        scientificCoreSha256: buildMetadata.scientificCoreSha256,
+        phase4: phase4Report,
       });
     }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
+    return true;
+  }
+
+  if (message.type === 'START_PHASE4') {
+    const nowMs = Date.now();
+    void runtime.then(async ({ journal, buildMetadata, phase4 }) => {
+      const experiment = await phase4.startExperiment(await journal.snapshot(), buildMetadata, nowMs);
+      const report = await phase4.syncLiveJournal(await journal.snapshot(), buildMetadata, nowMs);
+      sendResponse({ experiment, report });
+    }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'Phase 4 start failure' }));
+    return true;
+  }
+
+  if (message.type === 'IMPORT_PHASE4_DATASET_JSON') {
+    if (typeof message.json !== 'string') {
+      sendResponse({ error: 'Phase 4 dataset JSON missing' });
+      return;
+    }
+    void runtime.then(async ({ phase4 }) => {
+      const report = await phase4.importDatasetJson(message.json as string, Date.now());
+      sendResponse({ report });
+    }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'Phase 4 import failure' }));
+    return true;
+  }
+
+  if (message.type === 'EXPORT_PHASE4_REPORT_JSON') {
+    void runtime.then(async ({ phase4 }) => {
+      const report = await phase4.report();
+      if (!report.experiment) throw new Error('Phase 4 has not started');
+      sendResponse({ filename: `phase4-${report.experiment.experimentId}-report.json`, json: JSON.stringify(report, null, 2) });
+    }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'Phase 4 report export failure' }));
     return true;
   }
 
   if (message.type === 'EXPORT_DATASET_JSON') {
     const nowMs = Date.now();
     superviseShadowConnections(nowMs, false);
-    void runtime.then(async ({ journal, pipeline, buildMetadata }) => {
+    void runtime.then(async ({ journal, pipeline, buildMetadata, phase4 }) => {
       if (buildMetadata.gitCommit === null || buildMetadata.gitProvenance === 'UNAVAILABLE') {
         throw new Error('Scientific dataset export blocked: Git provenance unavailable. Run npm run verify inside the Git checkout, reload the extension, and export again.');
       }
@@ -482,6 +523,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       await flushTransportEvents();
       const operationalHealth = pipeline.getOperationalHealth(createdAt);
       const exporter = new DatasetExporter(journal);
+      await phase4.syncLiveJournal(await journal.snapshot(), buildMetadata, createdAt);
       const dataset = await exporter.create({
         ...buildMetadata,
         createdAt,

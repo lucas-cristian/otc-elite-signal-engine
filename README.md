@@ -277,3 +277,13 @@ Current operational state: HEALTHY
 Periodic server-driven shadow reconnects are acceptable when they recover within 15 seconds. They should produce `SHORT_RECONNECT_GAP` continuity evidence while preserving the same feed epoch. The dashboard must not show repeated full warmup resets solely because the Socket.IO transport instance changed.
 
 A reconnect that does not recover within 15 seconds is a hard scientific continuity break and must start a new epoch before new CALL/PUT signals are eligible.
+
+## v1.9.0 — Phase 4 prospective statistical validation
+
+v1.9.0 keeps the v1.8.2 signal/evaluation core frozen and adds a separate prospective validation authority. The dashboard can create the immutable experiment `P4-EURUSDOTC-V182-001`, establish the prospective start boundary, monitor unique STRICT episodes toward 500, compute exact one-sided binomial evidence and Wilson 95/99 intervals, display five chronological stability blocks, import schema-v9 scientific datasets with checksum/provenance validation, and export an append-only Phase 4 report.
+
+The frozen scientific core is checked by `npm run validate:scientific-core`. Any change to the signal/evaluation core fails verification until a new scientific baseline is explicitly created. Phase 4 does not claim realized profitability; economic validation remains unavailable while payout expiration binding is `UNBOUND`.
+
+See `phase4_protocol.md` for the frozen protocol and `validation_report_v1.9.0.md` for implementation validation.
+
+> After checking out v1.9.0 source, run `npm run verify` inside the Git checkout before reloading the unpacked extension. Generated `dist/` provenance must come from the local Git commit and is intentionally not authoritative when built outside the checkout.

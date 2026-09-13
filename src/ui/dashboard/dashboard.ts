@@ -2,6 +2,66 @@ interface PerformanceSliceResponse { key: string; resolved: number; correct: num
 interface AssetFeedHealthResponse { canonicalAssetId: string; feedId: string; state: string; reason: string; latestTickAgeMs: number | null; }
 interface CaptureTransportResponse { connected: boolean; visibility: string; frozen: boolean | null; discarded: boolean | null; autoDiscardable: boolean | null; lastSemanticEventAt: number | null; lastLifecycleEventAt: number | null; lastLifecycleReason: string | null; shadowConnected: boolean; shadowPrimary: boolean; shadowState: string; shadowEndpointHost: string | null; shadowReconnectAttempts: number; shadowConsecutiveNamespaceRejects: number; shadowCircuitOpen: boolean; shadowLastMessageAt: number | null; shadowLastPriceAt: number | null; shadowLastErrorReason: string | null; shadowLastCommandAt: number | null; mitigation: string; }
 
+
+interface Phase4PerformanceSliceResponse { key: string; resolved: number; correct: number; accuracy: number | null; }
+interface Phase4StabilityBlockResponse { block: number; startOrdinal: number; endOrdinal: number; resolved: number; correct: number; accuracy: number | null; }
+interface Phase4ExperimentResponse {
+  experimentId: string;
+  protocolVersion: string;
+  frozen: true;
+  baselineAppVersion: string;
+  baselineStrategyGitCommit: string;
+  scientificCoreSha256: string;
+  createdByBuildGitCommit: string;
+  configHash: string;
+  prospectiveStartedAt: number;
+  targetSampleSize: number;
+  alpha: number;
+  strictSettlementMaxDelayMs: number;
+  stabilityPolicyId: string;
+}
+interface Phase4EvaluationResponse {
+  finalStatus: 'PASS' | 'FAIL';
+  correct: number;
+  incorrect: number;
+  accuracy: number;
+  exactBinomialPValue: number;
+  wilson99Low: number;
+  wilson99High: number;
+  stabilityGate: 'PASS' | 'FAIL';
+  statisticalGate: 'PASS' | 'FAIL';
+}
+interface Phase4ReportResponse {
+  experiment: Phase4ExperimentResponse | null;
+  status: 'NOT_STARTED' | 'COLLECTING' | 'PASS' | 'FAIL' | 'INVALIDATED';
+  prospectiveUniqueStrictEpisodes: number;
+  targetSampleSize: number;
+  remaining: number;
+  correct: number;
+  incorrect: number;
+  accuracy: number | null;
+  wilson95Low: number | null;
+  wilson95High: number | null;
+  wilson99Low: number | null;
+  wilson99High: number | null;
+  exactBinomialPValue: number | null;
+  confirmatoryEligible: boolean;
+  confirmatoryEvaluation: Phase4EvaluationResponse | null;
+  integrityGate: string;
+  stabilityGate: string;
+  stabilityBlocks: Phase4StabilityBlockResponse[];
+  importedDatasetCount: number;
+  duplicateEpisodeCount: number;
+  exclusionsByReason: Record<string, number>;
+  timeframePerformance: Phase4PerformanceSliceResponse[];
+  directionPerformance: Phase4PerformanceSliceResponse[];
+  structureRegimePerformance: Phase4PerformanceSliceResponse[];
+  volatilityRegimePerformance: Phase4PerformanceSliceResponse[];
+  contributingStrategyPerformance: Phase4PerformanceSliceResponse[];
+  economicValidationStatus: 'UNAVAILABLE';
+  economicValidationReason: string;
+}
+
 interface AnalyticsResponse {
   tickCount?: number;
   candleCount?: number;
@@ -85,16 +145,22 @@ interface AnalyticsResponse {
   captureTransport?: CaptureTransportResponse;
   buildId?: string;
   sourceTreeSha256?: string | null;
+  scientificCoreSha256?: string | null;
   gitCommit?: string | null;
   gitWorkingTreeClean?: boolean | null;
   gitProvenance?: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
   scientificBuildProvenanceReady?: boolean;
+  phase4?: Phase4ReportResponse;
   error?: string;
 }
 
 const output = document.querySelector<HTMLElement>('#analytics');
 const refresh = document.querySelector<HTMLButtonElement>('#refresh');
 const exportButton = document.querySelector<HTMLButtonElement>('#export');
+const startPhase4Button = document.querySelector<HTMLButtonElement>('#start-phase4');
+const importPhase4Button = document.querySelector<HTMLButtonElement>('#import-phase4');
+const exportPhase4Button = document.querySelector<HTMLButtonElement>('#export-phase4');
+const phase4FileInput = document.querySelector<HTMLInputElement>('#phase4-file');
 let loading = false;
 
 function percent(value: number | null | undefined): string {
@@ -116,6 +182,27 @@ function age(value: number | null | undefined): string {
 
 function payout(value: number | null | undefined): string {
   return value === null || value === undefined ? 'UNKNOWN' : percent(value);
+}
+
+function pvalue(value: number | null | undefined): string {
+  if (value === null || value === undefined) return 'N/A';
+  return value < 0.000001 ? value.toExponential(3) : value.toFixed(6);
+}
+
+function phase4Performance(items: Phase4PerformanceSliceResponse[] | undefined): string {
+  if (!items || items.length === 0) return 'N/A';
+  return items.map((item) => `${item.key}: ${item.correct}/${item.resolved} (${percent(item.accuracy)})`).join(' | ');
+}
+
+function phase4Blocks(items: Phase4StabilityBlockResponse[] | undefined): string {
+  if (!items || items.length === 0) return 'N/A';
+  return items.map((item) => `B${item.block} ${item.correct}/${item.resolved} (${percent(item.accuracy)})`).join(' | ');
+}
+
+function phase4Exclusions(items: Record<string, number> | undefined): string {
+  if (!items) return 'none';
+  const entries = Object.entries(items).filter(([, count]) => count > 0).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length === 0 ? 'none' : entries.map(([reason, count]) => `${reason}=${count}`).join(' | ');
 }
 
 
@@ -169,6 +256,7 @@ async function load(): Promise<void> {
       'BUILD PROVENANCE',
       `Build ID: ${response.buildId ?? 'N/A'}`,
       `Source tree SHA-256: ${response.sourceTreeSha256 ?? 'N/A'}`,
+      `Frozen scientific core SHA-256: ${response.scientificCoreSha256 ?? 'N/A'}`,
       `Git provenance: ${response.gitProvenance ?? 'UNAVAILABLE'}`,
       `Git commit: ${response.gitCommit ?? 'N/A'}`,
       `Git working tree clean: ${response.gitWorkingTreeClean ?? 'N/A'}`,
@@ -247,6 +335,36 @@ async function load(): Promise<void> {
       `Relaxed by timeframe: ${performance(response.timeframePerformance)}`,
       `Relaxed by contributing strategy: ${performance(response.strategyPerformance)}`,
       '',
+      'PHASE 4 — PROSPECTIVE STATISTICAL VALIDATION',
+      `Experiment: ${response.phase4?.experiment?.experimentId ?? 'NOT_STARTED'}`,
+      `Protocol status: ${response.phase4?.experiment?.frozen ? 'FROZEN' : 'NOT_STARTED'}`,
+      `Derived status: ${response.phase4?.status ?? 'NOT_STARTED'}`,
+      `Strategy baseline: ${response.phase4?.experiment?.baselineAppVersion ?? 'N/A'} @ ${response.phase4?.experiment?.baselineStrategyGitCommit ?? 'N/A'}`,
+      `Scientific core: ${response.phase4?.experiment?.scientificCoreSha256 ?? 'N/A'}`,
+      `Config hash: ${response.phase4?.experiment?.configHash ?? 'N/A'}`,
+      `Prospective start: ${timestamp(response.phase4?.experiment?.prospectiveStartedAt)}`,
+      `Primary endpoint: STRICT directional accuracy <= ${response.phase4?.experiment?.strictSettlementMaxDelayMs ?? 1000} ms`,
+      `Prospective STRICT unique episodes: ${response.phase4?.prospectiveUniqueStrictEpisodes ?? 0}/${response.phase4?.targetSampleSize ?? 500}`,
+      `Remaining: ${response.phase4?.remaining ?? 500}`,
+      `Correct / incorrect: ${response.phase4?.correct ?? 0} / ${response.phase4?.incorrect ?? 0}`,
+      `Current accuracy: ${percent(response.phase4?.accuracy)}`,
+      `Wilson 95%: ${intervalText(response.phase4?.wilson95Low, response.phase4?.wilson95High)}`,
+      `Wilson 99%: ${intervalText(response.phase4?.wilson99Low, response.phase4?.wilson99High)}`,
+      `Exact one-sided binomial p-value: ${pvalue(response.phase4?.exactBinomialPValue)}`,
+      `Confirmatory eligible: ${response.phase4?.confirmatoryEligible ?? false}`,
+      `Integrity gate: ${response.phase4?.integrityGate ?? 'PENDING'}`,
+      `Stability gate: ${response.phase4?.stabilityGate ?? 'PENDING'}`,
+      `Stability blocks: ${phase4Blocks(response.phase4?.stabilityBlocks)}`,
+      `Imported datasets: ${response.phase4?.importedDatasetCount ?? 0}`,
+      `Duplicate episodes ignored: ${response.phase4?.duplicateEpisodeCount ?? 0}`,
+      `Exclusions: ${phase4Exclusions(response.phase4?.exclusionsByReason)}`,
+      `By timeframe (secondary): ${phase4Performance(response.phase4?.timeframePerformance)}`,
+      `By direction (secondary): ${phase4Performance(response.phase4?.directionPerformance)}`,
+      `By structure regime (secondary): ${phase4Performance(response.phase4?.structureRegimePerformance)}`,
+      `By volatility regime (secondary): ${phase4Performance(response.phase4?.volatilityRegimePerformance)}`,
+      `By contributing strategy (exploratory, overlapping): ${phase4Performance(response.phase4?.contributingStrategyPerformance)}`,
+      `Economic validation: ${response.phase4?.economicValidationStatus ?? 'UNAVAILABLE'} (${response.phase4?.economicValidationReason ?? 'PAYOUT_EXPIRATION_UNBOUND'})`,
+      '',
       'ECONOMIC EVALUATION (FAIL-CLOSED)',
       `Latest payout: ${payout(response.latestPayoutRate)}`,
       `Payout expiration: ${payoutExpiration}`,
@@ -280,8 +398,45 @@ async function exportDataset(): Promise<void> {
   URL.revokeObjectURL(url);
 }
 
+
+async function startPhase4(): Promise<void> {
+  if (!confirm('Start and irreversibly freeze Phase 4 prospective validation from this moment? Pre-existing results will not count toward the confirmatory sample.')) return;
+  const response = await chrome.runtime.sendMessage({ type: 'START_PHASE4' }) as { error?: string };
+  if (response.error && output) output.textContent = response.error;
+  await load();
+}
+
+async function importPhase4Dataset(file: File): Promise<void> {
+  const json = await file.text();
+  const response = await chrome.runtime.sendMessage({ type: 'IMPORT_PHASE4_DATASET_JSON', json }) as { error?: string };
+  if (response.error && output) output.textContent = response.error;
+  await load();
+}
+
+async function exportPhase4Report(): Promise<void> {
+  const response = await chrome.runtime.sendMessage({ type: 'EXPORT_PHASE4_REPORT_JSON' }) as { filename?: string; json?: string; error?: string };
+  if (!response.filename || !response.json) {
+    if (output) output.textContent = response.error ?? 'Phase 4 report export failed';
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([response.json], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = response.filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
 refresh?.addEventListener('click', () => void load());
 exportButton?.addEventListener('click', () => void exportDataset());
+startPhase4Button?.addEventListener('click', () => void startPhase4());
+importPhase4Button?.addEventListener('click', () => phase4FileInput?.click());
+phase4FileInput?.addEventListener('change', () => {
+  const file = phase4FileInput.files?.[0];
+  if (file) void importPhase4Dataset(file);
+  phase4FileInput.value = '';
+});
+exportPhase4Button?.addEventListener('click', () => void exportPhase4Report());
 window.setInterval(() => void load(), 2_000);
 void load();
 

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { scientificCoreSha256 } from './scientific-core.mjs';
 
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
 const appVersion = String(packageJson.version);
@@ -61,12 +62,14 @@ function gitState() {
 }
 
 const sourceTreeSha256 = sourceTreeHash();
+const frozenScientificCoreSha256 = scientificCoreSha256();
 const git = gitState();
 const buildMetadata = {
   appVersion,
   buildSystem: 'tsc',
   buildId: `source-${sourceTreeSha256.slice(0, 16)}`,
   sourceTreeSha256,
+  scientificCoreSha256: frozenScientificCoreSha256,
   gitCommit: git.gitCommit,
   gitWorkingTreeClean: git.gitWorkingTreeClean,
   gitProvenance: git.gitProvenance,

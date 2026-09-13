@@ -1,6 +1,6 @@
 {
   "name": "otc-elite-signal-engine",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,8 +10,9 @@
     "build:test": "node scripts/build-test.mjs",
     "test": "npm run build:test && node --test .test-dist/tests/*.test.js",
     "validate:manifest": "node scripts/validate-manifest.mjs",
-    "verify": "npm run typecheck && npm test && npm run build && npm run validate:build-metadata && npm run validate:manifest",
-    "validate:build-metadata": "node scripts/validate-build-metadata.mjs"
+    "verify": "npm run validate:scientific-core && npm run typecheck && npm test && npm run build && npm run validate:build-metadata && npm run validate:manifest",
+    "validate:build-metadata": "node scripts/validate-build-metadata.mjs",
+    "validate:scientific-core": "node scripts/validate-scientific-core.mjs"
   },
   "engines": {
     "node": ">=20"

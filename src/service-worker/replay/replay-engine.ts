@@ -33,6 +33,7 @@ export class ReplayEngine {
       appVersion: dataset.manifest.appVersion,
       buildId: `${dataset.manifest.buildId}:replay`,
       sourceTreeSha256: dataset.manifest.sourceTreeSha256 ?? null,
+      scientificCoreSha256: dataset.manifest.scientificCoreSha256 ?? null,
       gitCommit: dataset.manifest.gitCommit,
       gitWorkingTreeClean: dataset.manifest.gitWorkingTreeClean ?? null,
       gitProvenance: dataset.manifest.gitProvenance ?? 'UNAVAILABLE',

@@ -1,0 +1,255 @@
+import * as assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { canonicalEntityHash, canonicalJson } from '../src/common/hashing/canonical-hash.js';
+import { sha256 } from '../src/common/hashing/sha256.js';
+import type { ScientificDataset } from '../src/common/models/dataset-types.js';
+import type { DecisionRecord, ResultRecord, SignalRecord } from '../src/common/models/journal-types.js';
+import type { JournalSnapshot } from '../src/service-worker/storage/journal-repository.js';
+import { Phase4ValidationEngine } from '../src/scientific-validation/phase4/engine.js';
+import { MemoryPhase4Repository } from '../src/scientific-validation/phase4/repository.js';
+import {
+  PHASE4_BASELINE_SCIENTIFIC_CORE_SHA256,
+  PHASE4_TARGET_SAMPLE_SIZE,
+  type Phase4BuildIdentity,
+} from '../src/scientific-validation/phase4/types.js';
+import { exactOneSidedBinomialPValue } from '../src/scientific-validation/statistics/exact-binomial.js';
+import { wilsonInterval } from '../src/scientific-validation/statistics/wilson-interval.js';
+
+const source = {
+  marketSourceIdentitySchemaVersion: '2' as const,
+  platform: 'POCKET_OPTION' as const,
+  canonicalAssetId: 'EURUSDOTC',
+  marketType: 'OTC' as const,
+  source: 'POCKET_OPTION_WS_SOCKETIO_BINARY_JSON' as const,
+  feedId: 'demo-api-eu.po.market',
+  instrumentId: 'EURUSD_otc',
+  parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_STREAM_V1',
+};
+
+const build: Phase4BuildIdentity = {
+  appVersion: '1.9.0',
+  buildId: 'test-build',
+  sourceTreeSha256: 'a'.repeat(64),
+  scientificCoreSha256: PHASE4_BASELINE_SCIENTIFIC_CORE_SHA256,
+  gitCommit: 'b'.repeat(40),
+  gitWorkingTreeClean: true,
+  gitProvenance: 'GIT',
+};
+
+function emptySnapshot(): JournalSnapshot {
+  return { ticks: [], payoutSnapshots: [], candles: [], decisions: [], entryResolutions: [], decisionSignalLinks: [], signals: [], results: [], continuityEvents: [], transportEvents: [] };
+}
+
+function decision(id: string, marketEpisodeId: string, createdAt: number, configHash = 'frozen-config'): DecisionRecord {
+  return {
+    decisionSchemaVersion: '5', decisionId: id, decisionGranularityKey: `granularity-${id}`, executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', feedEpochId: 'epoch-1', timeframe: '5s', decisionComputedAt: createdAt - 5, decisionPublishedAt: createdAt - 5, alertPublishedAt: null, evaluationWindowId: `window-${id}`, candleStartTimestamp: createdAt - 5_000, candidateDirection: 'CALL', finalDecision: 'CALL', modelScore: 0.6, calibratedProbability: null, structureRegime: 'RANGE', volatilityRegime: 'NORMAL', strategySnapshots: [{ strategyId: 'MOMENTUM_V1', strategyVersion: '1', direction: 'CALL', rawScore: 0.6, evidence: [], blockers: [] }], featureSnapshot: null, evidenceSnapshot: null, sourceQuality: 'VERIFIED', sourceFeedId: source.feedId, sourceProtocolVerificationId: 'TEST_PROTOCOL', eventIntegrity: 'VALID', operationalDataState: 'HEALTHY', blockers: [], expirationSeconds: 60, configHash, configSnapshot: {}, appVersion: '1.9.0', marketEpisodeId, arbitrationStatus: 'PRIMARY', createdAt,
+  };
+}
+
+function signal(id: string, decisionId: string, marketEpisodeId: string, createdAt: number): SignalRecord {
+  return {
+    signalSchemaVersion: '4', signalId: id, signalFingerprint: `fingerprint-${id}`, decisionId, marketEpisodeId, feedEpochId: 'epoch-1', executionMode: 'LIVE', canonicalAssetId: 'EURUSDOTC', direction: 'CALL', referenceEntryPrice: 1.1, referenceEntryTimestamp: createdAt, expirationSeconds: 60, expectedExpiryTimestamp: createdAt + 60_000, entryMarketSourceIdentity: source, entryPageSessionId: 'page-1', payoutSnapshot: { payoutSnapshotSchemaVersion: '3', canonicalAssetId: 'EURUSDOTC', expirationSeconds: null, expirationBinding: 'UNBOUND', payoutRate: 0.8, capturedAt: createdAt, source: 'PLATFORM_PROTOCOL', quality: 'VERIFIED', feedId: source.feedId, parserSchemaId: 'POCKET_OPTION_SOCKETIO_BINARY_CHAFOR_V1', protocolVerificationId: 'TEST_PAYOUT' }, signalCreatedAt: createdAt,
+  };
+}
+
+function result(signalId: string, evaluatedAt: number, outcome: 'CORRECT' | 'INCORRECT' | 'FLAT' = 'CORRECT', timing = 100): ResultRecord {
+  return {
+    resolutionStatus: 'RESOLVED', resultSchemaVersion: '3', resultId: `result-${signalId}`, signalId, evaluationMode: 'REFERENCE_FEED', referenceExitPrice: outcome === 'FLAT' ? 1.1 : outcome === 'CORRECT' ? 1.2 : 1.0, referenceExitTimestamp: evaluatedAt, expiryTimingErrorMs: timing, priceOutcome: outcome === 'FLAT' ? 'FLAT' : outcome === 'CORRECT' ? 'UP' : 'DOWN', directionalOutcome: outcome, economicOutcome: 'UNKNOWN', economicReturn: null, economicEvaluationReason: outcome === 'FLAT' ? 'FLAT_REFERENCE_OUTCOME' : 'PAYOUT_EXPIRATION_UNBOUND', settlementMetadata: { settlementMetadataSchemaVersion: '2', confidence: 'UNKNOWN', source: null, verifiedAt: null }, exitMarketSourceIdentity: source, recoveredAcrossPageSession: false, entryPageSessionId: 'page-1', exitPageSessionId: 'page-1', evaluatedAt,
+  };
+}
+
+function withEpisode(snapshot: JournalSnapshot, ordinal: number, createdAt: number, outcome: 'CORRECT' | 'INCORRECT' = 'CORRECT', timing = 100, configHash = 'frozen-config'): void {
+  const episodeId = `episode-${ordinal.toString().padStart(4, '0')}`;
+  const decisionId = `decision-${ordinal}`;
+  const signalId = `signal-${ordinal}`;
+  snapshot.decisions.push(decision(decisionId, episodeId, createdAt, configHash));
+  snapshot.signals.push(signal(signalId, decisionId, episodeId, createdAt));
+  snapshot.results.push(result(signalId, createdAt + 60_000 + timing, outcome, timing));
+}
+
+async function startedEngine(startAt = 10_000): Promise<{ engine: Phase4ValidationEngine; snapshot: JournalSnapshot }> {
+  const repository = new MemoryPhase4Repository();
+  const engine = new Phase4ValidationEngine(repository);
+  const snapshot = emptySnapshot();
+  snapshot.decisions.push(decision('seed-decision', 'seed-episode', startAt - 1_000));
+  await engine.startExperiment(snapshot, build, startAt);
+  snapshot.decisions.length = 0;
+  return { engine, snapshot };
+}
+
+function datasetFrom(snapshot: JournalSnapshot, configHash: string, createdAt = 999_999): ScientificDataset {
+  const body = { ...snapshot };
+  const checksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
+  const manifestBase = {
+    datasetSchemaVersion: '9' as const,
+    createdAt,
+    appVersion: '1.9.0',
+    buildId: build.buildId,
+    sourceTreeSha256: build.sourceTreeSha256,
+    scientificCoreSha256: build.scientificCoreSha256,
+    gitCommit: build.gitCommit,
+    gitWorkingTreeClean: true,
+    gitProvenance: 'GIT' as const,
+    protocolRegistryVersion: 'TEST',
+    protocolVerificationIds: [],
+    exportOperationalDataState: 'HEALTHY' as const,
+    exportOperationalDataReason: 'FRESH',
+    latestTickAgeMsAtExport: 0,
+    assetFeedHealthAtExport: [],
+    captureTransportAtExport: { transportSchemaVersion: '4' as const, tabId: null, pageSessionId: null, connected: true, visibility: 'hidden' as const, frozen: false, discarded: false, autoDiscardable: false, lastSemanticEventAt: 999_999, lastLifecycleEventAt: null, lastConnectionEventAt: null, lastLifecycleReason: null, shadowConnected: true, shadowPrimary: true, shadowState: 'STREAMING' as const, shadowEndpointHost: source.feedId, shadowReconnectAttempts: 0, shadowConsecutiveNamespaceRejects: 0, shadowCircuitOpen: false, shadowLastMessageAt: 999_999, shadowLastPriceAt: 999_999, shadowLastErrorReason: null, shadowLastCommandAt: null, mitigation: 'MAIN_WORLD_NATIVE_SHADOW_RUNTIME_PORT_WATCHDOG_AUTO_DISCARD_DISABLED' as const },
+    tickCount: 0, decisionCount: snapshot.decisions.length, rawCandidateDecisionCount: snapshot.decisions.length, marketEpisodeCount: snapshot.decisions.length, suppressedCorrelatedDecisionCount: 0, signalCount: snapshot.signals.length, resultCount: snapshot.results.length, continuityEventCount: 0, transportEventCount: 0, reconnectEventCount: 0, configHashes: [configHash], checksumSha256,
+  };
+  const manifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 9, manifestBase) };
+  return { manifest, ...body };
+}
+
+test('exact binomial and Wilson vectors are deterministic', () => {
+  assert.equal(exactOneSidedBinomialPValue(10, 10, 0.5), 1 / 1024);
+  const interval = wilsonInterval(15, 21, 0.99);
+  assert.ok(interval);
+  assert.ok(interval.low > 0.43 && interval.low < 0.44);
+  assert.ok(interval.high > 0.89 && interval.high < 0.891);
+});
+
+test('Phase 4 excludes pre-period, flat and >1000ms outcomes while accepting 1000ms exactly', async () => {
+  const { engine, snapshot } = await startedEngine();
+  withEpisode(snapshot, 1, 9_999, 'CORRECT', 100);
+  withEpisode(snapshot, 2, 10_100, 'CORRECT', 1_000);
+  withEpisode(snapshot, 3, 10_200, 'CORRECT', 1_001);
+  const flatDecision = decision('decision-flat', 'episode-flat', 10_300);
+  snapshot.decisions.push(flatDecision);
+  snapshot.signals.push(signal('signal-flat', flatDecision.decisionId, 'episode-flat', 10_300));
+  snapshot.results.push(result('signal-flat', 70_300, 'FLAT', 100));
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 1);
+  assert.equal(report.correct, 1);
+  assert.equal(report.exclusionsByReason.PRE_PROSPECTIVE_PERIOD, 1);
+  assert.equal(report.exclusionsByReason.EXPIRY_TIMING_OUTSIDE_STRICT_WINDOW, 1);
+  assert.equal(report.exclusionsByReason.FLAT_DIRECTIONAL_OUTCOME, 1);
+});
+
+test('live resync and repeated dataset import never double-count a market episode', async () => {
+  const { engine, snapshot } = await startedEngine();
+  withEpisode(snapshot, 1, 10_100);
+  await engine.syncLiveJournal(snapshot, build, 100_000);
+  const again = await engine.syncLiveJournal(snapshot, build, 100_100);
+  assert.equal(again.prospectiveUniqueStrictEpisodes, 1);
+
+  const second = emptySnapshot();
+  withEpisode(second, 2, 10_200);
+  const ds = datasetFrom(second, 'frozen-config');
+  const json = JSON.stringify(ds);
+  const afterImport = await engine.importDatasetJson(json, 101_000);
+  assert.equal(afterImport.prospectiveUniqueStrictEpisodes, 2);
+  const duplicateImport = await engine.importDatasetJson(json, 102_000);
+  assert.equal(duplicateImport.prospectiveUniqueStrictEpisodes, 2);
+  assert.equal(duplicateImport.importedDatasetCount, 1);
+});
+
+test('n below 500 can never pass even with perfect accuracy', async () => {
+  const { engine, snapshot } = await startedEngine();
+  for (let index = 0; index < PHASE4_TARGET_SAMPLE_SIZE - 1; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 499);
+  assert.equal(report.status, 'COLLECTING');
+  assert.equal(report.confirmatoryEligible, false);
+  assert.equal(report.confirmatoryEvaluation, null);
+});
+
+test('500 stable episodes with strong edge produce PASS', async () => {
+  const { engine, snapshot } = await startedEngine();
+  for (let block = 0; block < 5; block += 1) {
+    for (let offset = 0; offset < 100; offset += 1) {
+      const ordinal = block * 100 + offset + 1;
+      withEpisode(snapshot, ordinal, 20_000 + ordinal * 70_000, offset < 64 ? 'CORRECT' : 'INCORRECT');
+    }
+  }
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
+  assert.equal(report.status, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.finalStatus, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.correct, 320);
+  assert.equal(report.confirmatoryEvaluation?.stabilityGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.statisticalGate, 'PASS');
+});
+
+test('500 episodes at chance level produce FAIL', async () => {
+  const { engine, snapshot } = await startedEngine();
+  for (let index = 0; index < 500; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, index % 2 === 0 ? 'CORRECT' : 'INCORRECT');
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000_000);
+  assert.equal(report.status, 'FAIL');
+  assert.equal(report.confirmatoryEvaluation?.statisticalGate, 'FAIL');
+});
+
+test('scientific core mismatch invalidates experiment instead of declaring strategy failure', async () => {
+  const { engine, snapshot } = await startedEngine();
+  const report = await engine.syncLiveJournal(snapshot, { ...build, scientificCoreSha256: 'c'.repeat(64) }, 20_000);
+  assert.equal(report.status, 'INVALIDATED');
+  assert.equal(report.integrityGate, 'FAIL');
+});
+
+test('Phase 4 dataset replay is deterministic regardless of import order', async () => {
+  const { Phase4ReplayEngine } = await import('../src/scientific-validation/phase4/replay.js');
+  const { engine } = await startedEngine();
+  const baseReport = await engine.report();
+  assert.ok(baseReport.experiment);
+
+  const first = emptySnapshot();
+  withEpisode(first, 10, 10_500, 'CORRECT');
+  const second = emptySnapshot();
+  withEpisode(second, 11, 10_600, 'INCORRECT');
+  const firstJson = JSON.stringify(datasetFrom(first, 'frozen-config'));
+  const secondJson = JSON.stringify(datasetFrom(second, 'frozen-config'));
+
+  const replay = new Phase4ReplayEngine();
+  const a = await replay.replay(baseReport.experiment, [firstJson, secondJson]);
+  const b = await replay.replay(baseReport.experiment, [secondJson, firstJson]);
+  assert.equal(a.prospectiveUniqueStrictEpisodes, b.prospectiveUniqueStrictEpisodes);
+  assert.equal(a.correct, b.correct);
+  assert.equal(a.incorrect, b.incorrect);
+  assert.equal(a.accuracy, b.accuracy);
+  assert.equal(a.exactBinomialPValue, b.exactBinomialPValue);
+  assert.equal(a.wilson99Low, b.wilson99Low);
+  assert.equal(a.wilson99High, b.wilson99High);
+});
+
+test('same market episode across two distinct datasets is counted once and recorded as duplicate', async () => {
+  const { engine } = await startedEngine();
+  const snapshot = emptySnapshot();
+  withEpisode(snapshot, 30, 11_000, 'CORRECT');
+  const first = JSON.stringify(datasetFrom(snapshot, 'frozen-config', 200_000));
+  const second = JSON.stringify(datasetFrom(snapshot, 'frozen-config', 300_000));
+  await engine.importDatasetJson(first, 200_000);
+  const report = await engine.importDatasetJson(second, 300_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 1);
+  assert.equal(report.importedDatasetCount, 2);
+  assert.equal(report.duplicateEpisodeCount, 1);
+});
+
+test('config mismatch and unverified source are explicitly excluded', async () => {
+  const { engine, snapshot } = await startedEngine();
+  withEpisode(snapshot, 40, 11_000, 'CORRECT', 100, 'wrong-config');
+  const badDecision = decision('decision-unverified', 'episode-unverified', 12_000);
+  badDecision.sourceQuality = 'INFERRED';
+  snapshot.decisions.push(badDecision);
+  snapshot.signals.push(signal('signal-unverified', badDecision.decisionId, 'episode-unverified', 12_000));
+  snapshot.results.push(result('signal-unverified', 72_100, 'CORRECT', 100));
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.CONFIG_HASH_MISMATCH, 1);
+  assert.equal(report.exclusionsByReason.UNVERIFIED_SOURCE, 1);
+});
+
+test('unresolved result is excluded and never enters the directional denominator', async () => {
+  const { engine, snapshot } = await startedEngine();
+  const d = decision('decision-unresolved', 'episode-unresolved', 12_000);
+  const s = signal('signal-unresolved', d.decisionId, 'episode-unresolved', 12_000);
+  snapshot.decisions.push(d);
+  snapshot.signals.push(s);
+  snapshot.results.push({
+    resolutionStatus: 'UNRESOLVED', resultSchemaVersion: '3', resultId: 'result-unresolved', signalId: s.signalId, evaluationMode: 'REFERENCE_FEED', referenceExitPrice: null, referenceExitTimestamp: null, expiryTimingErrorMs: null, priceOutcome: 'UNRESOLVED', directionalOutcome: 'UNRESOLVED', economicOutcome: 'UNKNOWN', economicReturn: null, economicEvaluationReason: 'RESULT_UNRESOLVED', settlementMetadata: { settlementMetadataSchemaVersion: '2', confidence: 'UNKNOWN', source: null, verifiedAt: null }, exitMarketSourceIdentity: null, unresolvedReason: 'DATA_UNAVAILABLE', evaluatedAt: 80_000,
+  });
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.RESULT_UNRESOLVED, 1);
+});
