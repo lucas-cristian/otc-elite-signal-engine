@@ -3,7 +3,7 @@
   "buildSystem": "tsc",
   "buildId": "source-a5ae91f2c5e81e24",
   "sourceTreeSha256": "a5ae91f2c5e81e2411a37ec459f713f44d3f03c3ce95dd14d2d8571b232fe13e",
-  "gitCommit": "cec641fbb3000d17fdfa3da2d2b6c9af4dc00a5f",
-  "gitWorkingTreeClean": false,
+  "gitCommit": "386e83db0a44832c589080b9f7be9215d6a057a4",
+  "gitWorkingTreeClean": true,
   "gitProvenance": "GIT"
 }
