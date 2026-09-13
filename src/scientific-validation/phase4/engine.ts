@@ -5,6 +5,7 @@ import type { DecisionRecord, EntryResolutionRecord, ResultRecord, SignalRecord 
 import type { MarketSourceIdentity, Tick } from '../../common/models/types.js';
 import type { JournalSnapshot } from '../../service-worker/storage/journal-repository.js';
 import { exactOneSidedBinomialPValue } from '../statistics/exact-binomial.js';
+import { temporalRobustness, utcDateKey } from '../statistics/temporal-robustness.js';
 import { wilsonInterval } from '../statistics/wilson-interval.js';
 import type { Phase4Repository, Phase4Snapshot } from './repository.js';
 import {
@@ -15,6 +16,8 @@ import {
   PHASE4_BUILTIN_HISTORICAL_INVALIDATIONS,
   PHASE4_DATASET_SCHEMA_VERSION,
   PHASE4_EXPERIMENT_ID,
+  PHASE4_MAX_EPISODES_PER_UTC_DATE,
+  PHASE4_MIN_DISTINCT_UTC_DATES,
   PHASE4_PROTOCOL_VERSION,
   PHASE4_RETIRED_EXPERIMENT_IDS,
   PHASE4_STABILITY_BLOCK_SIZE,
@@ -34,6 +37,7 @@ import {
   type Phase4PerformanceSlice,
   type Phase4Report,
   type Phase4StabilityBlock,
+  type Phase4StartAttestation,
 } from './types.js';
 
 interface IngestionCounts { accepted: number; excluded: number; duplicates: number; }
@@ -152,6 +156,31 @@ function expectedDirectionalOutcome(direction: 'CALL' | 'PUT', price: 'UP' | 'DO
   return (direction === 'CALL' && price === 'UP') || (direction === 'PUT' && price === 'DOWN') ? 'CORRECT' : 'INCORRECT';
 }
 
+export function createPhase4StartAttestation(experiment: Phase4Experiment): Phase4StartAttestation {
+  const body = {
+    startAttestationSchemaVersion: '1' as const,
+    experimentId: experiment.experimentId,
+    createdAt: experiment.prospectiveStartedAt,
+    prospectiveStartedAt: experiment.prospectiveStartedAt,
+    createdByAppVersion: experiment.createdByAppVersion,
+    createdByBuildGitCommit: experiment.createdByBuildGitCommit,
+    createdBySourceTreeSha256: experiment.createdBySourceTreeSha256,
+    scientificCoreSha256: experiment.scientificCoreSha256,
+    validationAuthoritySha256: experiment.validationAuthoritySha256,
+    protocolSha256: experiment.protocolSha256,
+    configHash: experiment.configHash,
+    targetSampleSize: experiment.targetSampleSize,
+    alpha: experiment.alpha,
+    strictSettlementMaxDelayMs: experiment.strictSettlementMaxDelayMs,
+    temporalDiversityPolicyId: experiment.temporalDiversityPolicyId,
+    minDistinctUtcDates: experiment.minDistinctUtcDates,
+    maxEpisodesPerUtcDate: experiment.maxEpisodesPerUtcDate,
+    dependenceSensitivityPolicyId: experiment.dependenceSensitivityPolicyId,
+    externalPreservationRequired: true as const,
+  };
+  return { ...body, attestationId: canonicalEntityHash('PHASE4_START_ATTESTATION', 1, body) };
+}
+
 export class Phase4ValidationEngine {
   public constructor(private readonly repository: Phase4Repository) {}
 
@@ -166,18 +195,23 @@ export class Phase4ValidationEngine {
     const latestDecision = snapshot.decisions.filter((decision) => decision.canonicalAssetId === 'EURUSDOTC').sort((a, b) => b.decisionComputedAt - a.decisionComputedAt)[0];
     if (!latestDecision) throw new Error('Phase 4 cannot start before at least one EURUSDOTC decision exists');
     const experiment: Phase4Experiment = {
-      experimentSchemaVersion: '2', experimentId: PHASE4_EXPERIMENT_ID, protocolVersion: PHASE4_PROTOCOL_VERSION, frozen: true,
+      experimentSchemaVersion: '3', experimentId: PHASE4_EXPERIMENT_ID, protocolVersion: PHASE4_PROTOCOL_VERSION, frozen: true,
       baselineAppVersion: PHASE4_BASELINE_APP_VERSION, baselineStrategyGitCommit: PHASE4_BASELINE_STRATEGY_GIT_COMMIT,
       scientificCoreSha256: build.scientificCoreSha256, validationAuthoritySha256: build.phase4ValidationAuthoritySha256, protocolSha256: build.phase4ProtocolSha256,
       createdByAppVersion: build.appVersion, createdByBuildGitCommit: build.gitCommit, createdBySourceTreeSha256: build.sourceTreeSha256,
       configHash: latestDecision.configHash, canonicalAssetId: 'EURUSDOTC', expirationSeconds: 60, prospectiveStartedAt: nowMs,
       targetSampleSize: PHASE4_TARGET_SAMPLE_SIZE, alpha: PHASE4_ALPHA, strictSettlementMaxDelayMs: PHASE4_STRICT_SETTLEMENT_MAX_DELAY_MS,
       primaryEndpoint: 'STRICT_DIRECTIONAL_ACCURACY', nullHypothesis: 'P_LE_0_50', alternativeHypothesis: 'P_GT_0_50',
-      stabilityPolicyId: 'STABILITY_GATE_V1', stabilityBlockSize: PHASE4_STABILITY_BLOCK_SIZE, datasetSchemaVersion: PHASE4_DATASET_SCHEMA_VERSION,
+      stabilityPolicyId: 'STABILITY_GATE_V1', stabilityBlockSize: PHASE4_STABILITY_BLOCK_SIZE,
+      temporalDiversityPolicyId: 'UTC_DATE_DIVERSITY_V1', minDistinctUtcDates: PHASE4_MIN_DISTINCT_UTC_DATES, maxEpisodesPerUtcDate: PHASE4_MAX_EPISODES_PER_UTC_DATE,
+      dependenceSensitivityPolicyId: 'LEAVE_ONE_UTC_DATE_OUT_V1', datasetSchemaVersion: PHASE4_DATASET_SCHEMA_VERSION,
     };
     await this.repository.appendExperiment(experiment);
-    await this.appendAudit(experiment.experimentId, 'EXPERIMENT_CREATED', nowMs, 'Prospective Phase 4 v3 experiment created');
-    await this.appendAudit(experiment.experimentId, 'EXPERIMENT_FROZEN', nowMs, 'Protocol, scientific core, validation authority, config hash and confirmatory rules frozen');
+    const attestation = createPhase4StartAttestation(experiment);
+    await this.repository.appendStartAttestation(attestation);
+    await this.appendAudit(experiment.experimentId, 'EXPERIMENT_CREATED', nowMs, 'Prospective Phase 4 v4 experiment created');
+    await this.appendAudit(experiment.experimentId, 'EXPERIMENT_FROZEN', nowMs, 'Protocol, scientific core, validation authority, config hash, temporal-diversity and confirmatory rules frozen');
+    await this.appendAudit(experiment.experimentId, 'START_ATTESTATION_CREATED', nowMs, attestation.attestationId);
     await this.appendAudit(experiment.experimentId, 'COLLECTION_STARTED', nowMs, 'Prospective collection boundary established');
     return experiment;
   }
@@ -218,7 +252,7 @@ export class Phase4ValidationEngine {
     if (stored.datasets.some((dataset) => dataset.key === datasetKey)) return this.reportFromSnapshot(stored, experiment);
     const counts = await this.ingestRecords(experiment, parsed.ticks, parsed.decisions, parsed.entryResolutions, parsed.signals, parsed.results, parsed.manifest.datasetId, parsed.manifest.gitCommit, true);
     const record: Phase4DatasetImportRecord = {
-      importSchemaVersion: '2', key: datasetKey, experimentId: experiment.experimentId, datasetId: parsed.manifest.datasetId, datasetSchemaVersion: parsed.manifest.datasetSchemaVersion,
+      importSchemaVersion: '3', key: datasetKey, experimentId: experiment.experimentId, datasetId: parsed.manifest.datasetId, datasetSchemaVersion: parsed.manifest.datasetSchemaVersion,
       checksumSha256: parsed.manifest.checksumSha256, gitCommit: parsed.manifest.gitCommit, gitProvenance: 'GIT', gitWorkingTreeClean: true,
       sourceTreeSha256: parsed.manifest.sourceTreeSha256, scientificCoreSha256: parsed.manifest.scientificCoreSha256 ?? '',
       validationAuthoritySha256: parsed.manifest.phase4ValidationAuthoritySha256 ?? '', protocolSha256: parsed.manifest.phase4ProtocolSha256 ?? '',
@@ -241,9 +275,12 @@ export class Phase4ValidationEngine {
     const experiment = snapshot.experiments.find((item) => item.experimentId === PHASE4_EXPERIMENT_ID);
     if (!experiment) throw new Error('Phase 4 has not started');
     const report = this.reportFromSnapshot(snapshot, experiment);
+    const startAttestation = snapshot.attestations.find((item) => item.experimentId === experiment.experimentId);
+    if (!startAttestation) throw new Error('Phase 4 start attestation missing');
     const body = {
       report,
       experiment,
+      startAttestation,
       acceptedEpisodes: sortedEpisodes(snapshot.episodes.filter((item) => item.experimentId === experiment.experimentId)).slice(0, experiment.targetSampleSize),
       importedDatasets: snapshot.datasets.filter((item) => item.experimentId === experiment.experimentId).sort((a, b) => a.datasetId.localeCompare(b.datasetId)),
       exclusions: snapshot.exclusions.filter((item) => item.experimentId === experiment.experimentId).sort((a, b) => a.occurredAt - b.occurredAt || a.exclusionId.localeCompare(b.exclusionId)),
@@ -251,8 +288,17 @@ export class Phase4ValidationEngine {
       evaluations: snapshot.evaluations.filter((item) => item.experimentId === experiment.experimentId),
     };
     const bodyChecksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
-    const manifestBase = { evidenceBundleSchemaVersion: '1' as const, experimentId: experiment.experimentId, generatedAt, scientificCoreSha256: experiment.scientificCoreSha256, validationAuthoritySha256: experiment.validationAuthoritySha256, protocolSha256: experiment.protocolSha256, bodyChecksumSha256 };
-    return { manifest: { ...manifestBase, evidenceBundleId: canonicalEntityHash('PHASE4_EVIDENCE_BUNDLE', 1, manifestBase) }, ...body };
+    const manifestBase = { evidenceBundleSchemaVersion: '2' as const, experimentId: experiment.experimentId, generatedAt, scientificCoreSha256: experiment.scientificCoreSha256, validationAuthoritySha256: experiment.validationAuthoritySha256, protocolSha256: experiment.protocolSha256, startAttestationId: startAttestation.attestationId, bodyChecksumSha256 };
+    return { manifest: { ...manifestBase, evidenceBundleId: canonicalEntityHash('PHASE4_EVIDENCE_BUNDLE', 2, manifestBase) }, ...body };
+  }
+
+  public async startAttestation(): Promise<Phase4StartAttestation> {
+    const snapshot = await this.repository.snapshot();
+    const experiment = snapshot.experiments.find((item) => item.experimentId === PHASE4_EXPERIMENT_ID);
+    if (!experiment) throw new Error('Phase 4 has not started');
+    const attestation = snapshot.attestations.find((item) => item.experimentId === experiment.experimentId);
+    if (!attestation) throw new Error('Phase 4 start attestation missing');
+    return attestation;
   }
 
   private async ingestRecords(
@@ -270,7 +316,13 @@ export class Phase4ValidationEngine {
     const signalById = new Map(signals.map((signal) => [signal.signalId, signal]));
     const entryByDecisionId = new Map(entries.map((entry) => [entry.decisionId, entry]));
     const tickById = new Map(ticks.map((tick) => [tick.tickId, tick]));
-    const exitTickAnchors = new Set(ticks.map((tick) => marketTickAnchorKey(tick.marketSourceIdentity, tick.pageSessionId, tick.eventTimestampEpochMs, tick.price)));
+    const exitTicksByAnchor = new Map<string, Tick[]>();
+    for (const tick of ticks) {
+      const anchor = marketTickAnchorKey(tick.marketSourceIdentity, tick.pageSessionId, tick.eventTimestampEpochMs, tick.price);
+      const candidates = exitTicksByAnchor.get(anchor) ?? [];
+      candidates.push(tick);
+      exitTicksByAnchor.set(anchor, candidates);
+    }
     const existingSnapshot = await this.repository.snapshot();
     const existingExperimentEpisodes = sortedEpisodes(existingSnapshot.episodes.filter((episode) => episode.experimentId === experiment.experimentId));
     const existingKeys = new Set(existingSnapshot.episodes.map((episode) => episode.key));
@@ -298,7 +350,7 @@ export class Phase4ValidationEngine {
       }
       const decision = signal ? decisionById.get(signal.decisionId) ?? null : null;
       const entry = decision ? entryByDecisionId.get(decision.decisionId) ?? null : null;
-      const eligibility = this.eligibility(experiment, tickById, exitTickAnchors, decision, entry, signal, result);
+      const eligibility = this.eligibility(experiment, tickById, exitTicksByAnchor, decision, entry, signal, result);
       if (eligibility !== null) {
         if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, signal, result, eligibility.reason, eligibility.detail)) excluded += 1;
         continue;
@@ -311,9 +363,9 @@ export class Phase4ValidationEngine {
       }
 
       const episode: Phase4EpisodeRecord = {
-        episodeSchemaVersion: '2', key, experimentId: experiment.experimentId, marketEpisodeId: signal.marketEpisodeId, signalId: signal.signalId, decisionId: decision.decisionId,
+        episodeSchemaVersion: '3', key, experimentId: experiment.experimentId, marketEpisodeId: signal.marketEpisodeId, signalId: signal.signalId, decisionId: decision.decisionId,
         entryResolutionId: entry.entryResolutionId, sourceDatasetId, sourceGitCommit, canonicalAssetId: 'EURUSDOTC', sourceFeedId: signal.entryMarketSourceIdentity.feedId,
-        feedEpochId: signal.feedEpochId, signalCreatedAt: signal.signalCreatedAt, referenceEntryTimestamp: signal.referenceEntryTimestamp, expectedExpiryTimestamp: signal.expectedExpiryTimestamp,
+        feedEpochId: signal.feedEpochId, signalCreatedAt: signal.signalCreatedAt, utcDate: utcDateKey(signal.signalCreatedAt), referenceEntryTimestamp: signal.referenceEntryTimestamp, expectedExpiryTimestamp: signal.expectedExpiryTimestamp,
         referenceExitTimestamp: result.referenceExitTimestamp, resultEvaluatedAt: result.evaluatedAt, timeframe: decision.timeframe, direction: signal.direction,
         structureRegime: decision.structureRegime, volatilityRegime: decision.volatilityRegime,
         contributingStrategyIds: [...new Set(decision.strategySnapshots.filter((strategy) => strategy.direction === signal.direction).map((strategy) => strategy.strategyId))].sort(),
@@ -348,10 +400,18 @@ export class Phase4ValidationEngine {
 
     eligibleCandidates.sort((a, b) => a.episode.signalCreatedAt - b.episode.signalCreatedAt || a.episode.marketEpisodeId.localeCompare(b.episode.marketEpisodeId));
     let remaining = Math.max(0, experiment.targetSampleSize - existingExperimentEpisodes.length);
+    const acceptedByUtcDate = new Map<string, number>();
+    for (const episode of existingExperimentEpisodes) acceptedByUtcDate.set(episode.utcDate, (acceptedByUtcDate.get(episode.utcDate) ?? 0) + 1);
     for (const candidate of eligibleCandidates) {
       if (remaining > 0) {
+        const acceptedOnDate = acceptedByUtcDate.get(candidate.episode.utcDate) ?? 0;
+        if (acceptedOnDate >= experiment.maxEpisodesPerUtcDate) {
+          if (await this.appendExclusionIfNew(existingExclusionIds, experiment.experimentId, sourceDatasetId, candidate.signal, candidate.result, 'TEMPORAL_DAILY_CAP_REACHED', candidate.episode.utcDate)) excluded += 1;
+          continue;
+        }
         await this.repository.appendEpisode(candidate.episode);
         existingKeys.add(candidate.key);
+        acceptedByUtcDate.set(candidate.episode.utcDate, acceptedOnDate + 1);
         accepted += 1;
         remaining -= 1;
         continue;
@@ -365,7 +425,7 @@ export class Phase4ValidationEngine {
     return { accepted, excluded, duplicates };
   }
 
-  private eligibility(experiment: Phase4Experiment, tickById: Map<string, Tick>, exitTickAnchors: Set<string>, decision: DecisionRecord | null, entry: EntryResolutionRecord | null, signal: SignalRecord | null, result: ResultRecord): { reason: Phase4ExclusionReason; detail: string | null } | null {
+  private eligibility(experiment: Phase4Experiment, tickById: Map<string, Tick>, exitTicksByAnchor: Map<string, Tick[]>, decision: DecisionRecord | null, entry: EntryResolutionRecord | null, signal: SignalRecord | null, result: ResultRecord): { reason: Phase4ExclusionReason; detail: string | null } | null {
     if (!signal) return { reason: 'MISSING_SIGNAL', detail: result.signalId };
     if (!decision) return { reason: 'MISSING_DECISION', detail: signal.decisionId };
     if (!entry) return { reason: 'MISSING_ENTRY_RESOLUTION', detail: signal.decisionId };
@@ -386,12 +446,17 @@ export class Phase4ValidationEngine {
     if (signal.expectedExpiryTimestamp !== signal.referenceEntryTimestamp + signal.expirationSeconds * 1_000) return { reason: 'REFERENCE_TIMELINE_MISMATCH', detail: 'expected expiry' };
     if (decision.sourceFeedId === null || decision.sourceFeedId !== signal.entryMarketSourceIdentity.feedId || !sameMarketSource(entry.entryMarketSourceIdentity, signal.entryMarketSourceIdentity)) return { reason: 'MARKET_SOURCE_MISMATCH', detail: 'entry source' };
     const entryTick = tickById.get(entry.entryTickId);
-    if (!entryTick || entryTick.eventTimestampEpochMs !== entry.referenceEntryTimestamp || entryTick.price !== entry.referenceEntryPrice || entryTick.pageSessionId !== entry.entryPageSessionId || entryTick.integrity !== 'VALID' || entryTick.sourceQuality !== 'VERIFIED' || !sameMarketSource(entryTick.marketSourceIdentity, entry.entryMarketSourceIdentity)) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `entry:${entry.entryTickId}` };
+    if (!entryTick || entryTick.eventTimestampEpochMs !== entry.referenceEntryTimestamp || entryTick.price !== entry.referenceEntryPrice || entryTick.pageSessionId !== entry.entryPageSessionId || !sameMarketSource(entryTick.marketSourceIdentity, entry.entryMarketSourceIdentity)) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `entry:${entry.entryTickId}` };
+    if (entryTick.integrity !== 'VALID' || entryTick.sourceQuality !== 'VERIFIED' || entryTick.protocolVerificationId === null) return { reason: 'RAW_TICK_QUALITY_INVALID', detail: `entry:${entry.entryTickId}` };
     if (result.evaluationMode !== 'REFERENCE_FEED') return { reason: 'NON_REFERENCE_FEED_EVALUATION', detail: result.evaluationMode };
     if (result.resolutionStatus !== 'RESOLVED') return { reason: 'RESULT_UNRESOLVED', detail: result.unresolvedReason };
     if (result.entryPageSessionId !== signal.entryPageSessionId || !sameMarketSource(signal.entryMarketSourceIdentity, result.exitMarketSourceIdentity)) return { reason: 'MARKET_SOURCE_MISMATCH', detail: 'exit source' };
     const exitAnchor = marketTickAnchorKey(result.exitMarketSourceIdentity, result.exitPageSessionId, result.referenceExitTimestamp, result.referenceExitPrice);
-    if (!exitTickAnchors.has(exitAnchor)) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `exit:${result.signalId}` };
+    const exitCandidates = exitTicksByAnchor.get(exitAnchor) ?? [];
+    if (exitCandidates.length === 0) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `exit:${result.signalId}` };
+    const exitTick = exitCandidates.find((tick) => canonicalEntityHash('RESULT_RESOLVED', 3, { signalId: result.signalId, exitTickId: tick.tickId, referenceExitTimestamp: result.referenceExitTimestamp, referenceExitPrice: result.referenceExitPrice }) === result.resultId) ?? null;
+    if (!exitTick) return { reason: 'RAW_TICK_ANCHOR_MISMATCH', detail: `exit-result-id:${result.resultId}` };
+    if (exitTick.integrity !== 'VALID' || exitTick.sourceQuality !== 'VERIFIED' || exitTick.protocolVerificationId === null) return { reason: 'RAW_TICK_QUALITY_INVALID', detail: `exit:${exitTick.tickId}` };
     if (!Number.isInteger(result.expiryTimingErrorMs) || result.expiryTimingErrorMs < 0) return { reason: 'INVALID_EXPIRY_TIMING', detail: String(result.expiryTimingErrorMs) };
     if (result.referenceExitTimestamp - signal.expectedExpiryTimestamp !== result.expiryTimingErrorMs || result.evaluatedAt < result.referenceExitTimestamp) return { reason: 'REFERENCE_TIMELINE_MISMATCH', detail: 'settlement timeline' };
     if (result.expiryTimingErrorMs > experiment.strictSettlementMaxDelayMs) return { reason: 'EXPIRY_TIMING_OUTSIDE_STRICT_WINDOW', detail: String(result.expiryTimingErrorMs) };
@@ -405,14 +470,14 @@ export class Phase4ValidationEngine {
   private async appendExclusionIfNew(existingIds: Set<string>, experimentId: string, sourceDatasetId: string, signal: SignalRecord | null, result: ResultRecord, reason: Phase4ExclusionReason, detail: string | null): Promise<boolean> {
     const occurredAt = result.evaluatedAt;
     const input = { experimentId, sourceDatasetId, signalId: signal?.signalId ?? null, marketEpisodeId: signal?.marketEpisodeId ?? null, occurredAt, reason, detail };
-    const exclusion: Phase4ExclusionRecord = { exclusionSchemaVersion: '2', exclusionId: canonicalEntityHash('PHASE4_EXCLUSION', 2, input), ...input };
+    const exclusion: Phase4ExclusionRecord = { exclusionSchemaVersion: '3', exclusionId: canonicalEntityHash('PHASE4_EXCLUSION', 3, input), ...input };
     if (existingIds.has(exclusion.exclusionId)) return false;
     await this.repository.appendExclusion(exclusion); existingIds.add(exclusion.exclusionId); return true;
   }
 
   private async appendAudit(experimentId: string, eventType: Phase4AuditEventType, occurredAt: number, detail: string): Promise<void> {
     const input = { experimentId, eventType, occurredAt, detail };
-    await this.repository.appendAuditEvent({ auditEventSchemaVersion: '2', auditEventId: canonicalEntityHash('PHASE4_AUDIT', 2, input), ...input });
+    await this.repository.appendAuditEvent({ auditEventSchemaVersion: '3', auditEventId: canonicalEntityHash('PHASE4_AUDIT', 3, input), ...input });
   }
 
   private async retireLegacyExperimentsIfPresent(nowMs: number): Promise<void> {
@@ -446,12 +511,22 @@ export class Phase4ValidationEngine {
     const pValue = exactOneSidedBinomialPValue(correct, confirmatory.length, 0.5); const interval99 = wilsonInterval(correct, confirmatory.length, 0.99);
     if (pValue === null || interval99 === null) throw new Error('Unable to evaluate Phase 4 confirmatory sample');
     const blocks = stabilityBlocks(confirmatory); const stabilityPass = stabilityGatePass(blocks); const statisticalPass = pValue < experiment.alpha && interval99.low > 0.5;
+    const temporal = temporalRobustness(confirmatory.map((episode) => ({ timestampEpochMs: episode.signalCreatedAt, correct: episode.directionalOutcome === 'CORRECT' })));
+    const leaveOneDateOut = temporal.leaveOneUtcDateOut.map((item) => {
+      const interval = wilsonInterval(item.correct, item.resolved, 0.95);
+      return { ...item, wilson95Low: interval?.low ?? null, wilson95High: interval?.high ?? null };
+    });
+    const minimumLeaveOneWilson95Low = leaveOneDateOut.reduce<number | null>((minimum, item) => item.wilson95Low === null ? minimum : minimum === null ? item.wilson95Low : Math.min(minimum, item.wilson95Low), null);
+    const temporalDiversityPass = temporal.distinctUtcDateCount >= experiment.minDistinctUtcDates && temporal.maxEpisodesOnSingleUtcDate <= experiment.maxEpisodesPerUtcDate;
+    const dependenceSensitivityPass = temporalDiversityPass && leaveOneDateOut.length >= experiment.minDistinctUtcDates
+      && leaveOneDateOut.every((item) => item.wilson95Low !== null && item.wilson95Low > 0.5);
     const cutoff = confirmatory[confirmatory.length - 1]; if (!cutoff) throw new Error('Phase 4 confirmatory cutoff unavailable');
     const evaluatedAt = Math.max(...confirmatory.map((episode) => episode.resultEvaluatedAt));
-    const evaluation: Phase4Evaluation = { evaluationSchemaVersion: '2', experimentId: experiment.experimentId, evaluatedAt, confirmatorySampleSize: confirmatory.length, correct, incorrect: confirmatory.length - correct, accuracy: correct / confirmatory.length, exactBinomialPValue: pValue, wilson99Low: interval99.low, wilson99High: interval99.high, integrityGate: 'PASS', stabilityGate: stabilityPass ? 'PASS' : 'FAIL', statisticalGate: statisticalPass ? 'PASS' : 'FAIL', finalStatus: stabilityPass && statisticalPass ? 'PASS' : 'FAIL', sampleCutoffSignalCreatedAt: cutoff.signalCreatedAt, sampleCutoffMarketEpisodeId: cutoff.marketEpisodeId };
+    const finalPass = stabilityPass && temporalDiversityPass && dependenceSensitivityPass && statisticalPass;
+    const evaluation: Phase4Evaluation = { evaluationSchemaVersion: '3', experimentId: experiment.experimentId, evaluatedAt, confirmatorySampleSize: confirmatory.length, correct, incorrect: confirmatory.length - correct, accuracy: correct / confirmatory.length, exactBinomialPValue: pValue, wilson99Low: interval99.low, wilson99High: interval99.high, integrityGate: 'PASS', stabilityGate: stabilityPass ? 'PASS' : 'FAIL', temporalDiversityGate: temporalDiversityPass ? 'PASS' : 'FAIL', dependenceSensitivityGate: dependenceSensitivityPass ? 'PASS' : 'FAIL', statisticalGate: statisticalPass ? 'PASS' : 'FAIL', distinctUtcDateCount: temporal.distinctUtcDateCount, maxEpisodesOnSingleUtcDate: temporal.maxEpisodesOnSingleUtcDate, minimumLeaveOneUtcDateOutAccuracy: temporal.minimumLeaveOneUtcDateOutAccuracy, minimumLeaveOneUtcDateOutWilson95Low: minimumLeaveOneWilson95Low, worstExcludedUtcDate: temporal.worstExcludedUtcDate, finalStatus: finalPass ? 'PASS' : 'FAIL', sampleCutoffSignalCreatedAt: cutoff.signalCreatedAt, sampleCutoffMarketEpisodeId: cutoff.marketEpisodeId };
     await this.repository.appendEvaluation(evaluation);
     await this.appendAudit(experiment.experimentId, 'SAMPLE_TARGET_REACHED', evaluatedAt, `n=${confirmatory.length}`);
-    await this.appendAudit(experiment.experimentId, 'CONFIRMATORY_TEST_EXECUTED', evaluatedAt, `p=${pValue}; wilson99Low=${interval99.low}; stability=${evaluation.stabilityGate}`);
+    await this.appendAudit(experiment.experimentId, 'CONFIRMATORY_TEST_EXECUTED', evaluatedAt, `p=${pValue}; wilson99Low=${interval99.low}; stability=${evaluation.stabilityGate}; temporal=${evaluation.temporalDiversityGate}; dependence=${evaluation.dependenceSensitivityGate}`);
     await this.appendAudit(experiment.experimentId, evaluation.finalStatus === 'PASS' ? 'EXPERIMENT_PASSED' : 'EXPERIMENT_FAILED', evaluatedAt, evaluation.finalStatus);
   }
 
@@ -480,14 +555,23 @@ export class Phase4ValidationEngine {
 
   private reportFromSnapshot(snapshot: Phase4Snapshot, experiment: Phase4Experiment | null): Phase4Report {
     const historicalInvalidatedExperiments = this.historicalSummaries(snapshot);
-    const make = (base: Omit<Phase4Report, 'reportId'>): Phase4Report => ({ ...base, reportId: canonicalEntityHash('PHASE4_REPORT', 2, base) });
-    if (!experiment) return make({ reportSchemaVersion: '2', experiment: null, status: 'NOT_STARTED', prospectiveUniqueStrictEpisodes: 0, targetSampleSize: PHASE4_TARGET_SAMPLE_SIZE, remaining: PHASE4_TARGET_SAMPLE_SIZE, correct: 0, incorrect: 0, accuracy: null, wilson95Low: null, wilson95High: null, wilson99Low: null, wilson99High: null, exactBinomialPValue: null, confirmatoryEligible: false, confirmatoryEvaluation: null, integrityGate: 'PENDING', stabilityGate: 'PENDING', stabilityBlocks: [], importedDatasetCount: 0, duplicateEpisodeCount: 0, exclusionsByReason: {}, timeframePerformance: [], directionPerformance: [], structureRegimePerformance: [], volatilityRegimePerformance: [], contributingStrategyPerformance: [], historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
+    const make = (base: Omit<Phase4Report, 'reportId'>): Phase4Report => ({ ...base, reportId: canonicalEntityHash('PHASE4_REPORT', 3, base) });
+    if (!experiment) return make({ reportSchemaVersion: '3', experiment: null, startAttestationId: null, externalStartAttestationRequired: true, status: 'NOT_STARTED', prospectiveUniqueStrictEpisodes: 0, targetSampleSize: PHASE4_TARGET_SAMPLE_SIZE, remaining: PHASE4_TARGET_SAMPLE_SIZE, correct: 0, incorrect: 0, accuracy: null, wilson95Low: null, wilson95High: null, wilson99Low: null, wilson99High: null, exactBinomialPValue: null, confirmatoryEligible: false, confirmatoryEvaluation: null, integrityGate: 'PENDING', stabilityGate: 'PENDING', temporalDiversityGate: 'PENDING', dependenceSensitivityGate: 'PENDING', distinctUtcDateCount: 0, maxEpisodesOnSingleUtcDate: 0, minimumLeaveOneUtcDateOutAccuracy: null, minimumLeaveOneUtcDateOutWilson95Low: null, worstExcludedUtcDate: null, stabilityBlocks: [], utcDatePerformance: [], leaveOneUtcDateOutPerformance: [], importedDatasetCount: 0, duplicateEpisodeCount: 0, exclusionsByReason: {}, timeframePerformance: [], directionPerformance: [], structureRegimePerformance: [], volatilityRegimePerformance: [], contributingStrategyPerformance: [], historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
     const allEpisodes = sortedEpisodes(snapshot.episodes.filter((episode) => episode.experimentId === experiment.experimentId));
     const episodes = allEpisodes.slice(0, experiment.targetSampleSize);
     const correct = episodes.filter((episode) => episode.directionalOutcome === 'CORRECT').length;
     const interval95 = wilsonInterval(correct, episodes.length, 0.95); const interval99 = wilsonInterval(correct, episodes.length, 0.99); const pValue = exactOneSidedBinomialPValue(correct, episodes.length, 0.5);
     const evaluation = snapshot.evaluations.find((item) => item.experimentId === experiment.experimentId) ?? null; const invalidated = snapshot.auditEvents.some((event) => event.experimentId === experiment.experimentId && event.eventType === 'EXPERIMENT_INVALIDATED');
     const exclusionsByReason: Partial<Record<Phase4ExclusionReason, number>> = {}; for (const exclusion of snapshot.exclusions.filter((item) => item.experimentId === experiment.experimentId)) exclusionsByReason[exclusion.reason] = (exclusionsByReason[exclusion.reason] ?? 0) + 1;
-    return make({ reportSchemaVersion: '2', experiment, status: invalidated ? 'INVALIDATED' : evaluation?.finalStatus ?? 'COLLECTING', prospectiveUniqueStrictEpisodes: episodes.length, targetSampleSize: experiment.targetSampleSize, remaining: Math.max(0, experiment.targetSampleSize - episodes.length), correct, incorrect: episodes.length - correct, accuracy: episodes.length === 0 ? null : correct / episodes.length, wilson95Low: interval95?.low ?? null, wilson95High: interval95?.high ?? null, wilson99Low: interval99?.low ?? null, wilson99High: interval99?.high ?? null, exactBinomialPValue: pValue, confirmatoryEligible: episodes.length >= experiment.targetSampleSize && !invalidated, confirmatoryEvaluation: evaluation, integrityGate: invalidated ? 'FAIL' : 'PASS', stabilityGate: evaluation?.stabilityGate ?? 'PENDING', stabilityBlocks: stabilityBlocks(episodes), importedDatasetCount: snapshot.datasets.filter((dataset) => dataset.experimentId === experiment.experimentId).length, duplicateEpisodeCount: exclusionsByReason.DUPLICATE_MARKET_EPISODE ?? 0, exclusionsByReason, timeframePerformance: performanceSlice(episodes, (episode) => [episode.timeframe]), directionPerformance: performanceSlice(episodes, (episode) => [episode.direction]), structureRegimePerformance: performanceSlice(episodes, (episode) => [episode.structureRegime]), volatilityRegimePerformance: performanceSlice(episodes, (episode) => [episode.volatilityRegime]), contributingStrategyPerformance: performanceSlice(episodes, (episode) => episode.contributingStrategyIds), historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
+    const attestation = snapshot.attestations.find((item) => item.experimentId === experiment.experimentId) ?? null;
+    const temporal = temporalRobustness(episodes.map((episode) => ({ timestampEpochMs: episode.signalCreatedAt, correct: episode.directionalOutcome === 'CORRECT' })));
+    const leaveOneDateOut = temporal.leaveOneUtcDateOut.map((item) => {
+      const interval = wilsonInterval(item.correct, item.resolved, 0.95);
+      return { ...item, wilson95Low: interval?.low ?? null, wilson95High: interval?.high ?? null };
+    });
+    const minimumLeaveOneWilson95Low = leaveOneDateOut.reduce<number | null>((minimum, item) => item.wilson95Low === null ? minimum : minimum === null ? item.wilson95Low : Math.min(minimum, item.wilson95Low), null);
+    const temporalDiversityStatus = evaluation?.temporalDiversityGate ?? (episodes.length >= experiment.targetSampleSize ? 'FAIL' : 'PENDING');
+    const dependenceSensitivityStatus = evaluation?.dependenceSensitivityGate ?? (episodes.length >= experiment.targetSampleSize ? 'FAIL' : 'PENDING');
+    return make({ reportSchemaVersion: '3', experiment, startAttestationId: attestation?.attestationId ?? null, externalStartAttestationRequired: true, status: invalidated ? 'INVALIDATED' : evaluation?.finalStatus ?? 'COLLECTING', prospectiveUniqueStrictEpisodes: episodes.length, targetSampleSize: experiment.targetSampleSize, remaining: Math.max(0, experiment.targetSampleSize - episodes.length), correct, incorrect: episodes.length - correct, accuracy: episodes.length === 0 ? null : correct / episodes.length, wilson95Low: interval95?.low ?? null, wilson95High: interval95?.high ?? null, wilson99Low: interval99?.low ?? null, wilson99High: interval99?.high ?? null, exactBinomialPValue: pValue, confirmatoryEligible: episodes.length >= experiment.targetSampleSize && !invalidated && attestation !== null, confirmatoryEvaluation: evaluation, integrityGate: invalidated || attestation === null ? 'FAIL' : 'PASS', stabilityGate: evaluation?.stabilityGate ?? 'PENDING', temporalDiversityGate: temporalDiversityStatus, dependenceSensitivityGate: dependenceSensitivityStatus, distinctUtcDateCount: temporal.distinctUtcDateCount, maxEpisodesOnSingleUtcDate: temporal.maxEpisodesOnSingleUtcDate, minimumLeaveOneUtcDateOutAccuracy: temporal.minimumLeaveOneUtcDateOutAccuracy, minimumLeaveOneUtcDateOutWilson95Low: minimumLeaveOneWilson95Low, worstExcludedUtcDate: temporal.worstExcludedUtcDate, stabilityBlocks: stabilityBlocks(episodes), utcDatePerformance: temporal.utcDatePerformance, leaveOneUtcDateOutPerformance: leaveOneDateOut, importedDatasetCount: snapshot.datasets.filter((dataset) => dataset.experimentId === experiment.experimentId).length, duplicateEpisodeCount: exclusionsByReason.DUPLICATE_MARKET_EPISODE ?? 0, exclusionsByReason, timeframePerformance: performanceSlice(episodes, (episode) => [episode.timeframe]), directionPerformance: performanceSlice(episodes, (episode) => [episode.direction]), structureRegimePerformance: performanceSlice(episodes, (episode) => [episode.structureRegime]), volatilityRegimePerformance: performanceSlice(episodes, (episode) => [episode.volatilityRegime]), contributingStrategyPerformance: performanceSlice(episodes, (episode) => episode.contributingStrategyIds), historicalInvalidatedExperiments, economicValidationStatus: 'UNAVAILABLE', economicValidationReason: 'PAYOUT_EXPIRATION_UNBOUND' });
   }
 }

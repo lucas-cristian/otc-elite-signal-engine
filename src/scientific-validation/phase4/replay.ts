@@ -1,4 +1,4 @@
-import { Phase4ValidationEngine } from './engine.js';
+import { createPhase4StartAttestation, Phase4ValidationEngine } from './engine.js';
 import { MemoryPhase4Repository } from './repository.js';
 import type { Phase4Experiment, Phase4Report } from './types.js';
 
@@ -26,6 +26,7 @@ export class Phase4ReplayEngine {
   public async replay(experiment: Phase4Experiment, datasetJsons: string[]): Promise<Phase4Report> {
     const repository = new MemoryPhase4Repository();
     await repository.appendExperiment(experiment);
+    await repository.appendStartAttestation(createPhase4StartAttestation(experiment));
     const engine = new Phase4ValidationEngine(repository);
     const sorted = [...datasetJsons].sort((a, b) => datasetIdFromJson(a).localeCompare(datasetIdFromJson(b)));
     for (const json of sorted) await engine.importDatasetJson(json, createdAtFromJson(json));

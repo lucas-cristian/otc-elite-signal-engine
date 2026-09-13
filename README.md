@@ -304,3 +304,13 @@ v1.9.2 preserves the frozen v1.8.2 signal/evaluation core and changes only the P
 The Phase 4 accepted sample is now hard-capped at exactly 500. Batch/live/import overflow is recorded as `POST_CONFIRMATORY_PERIOD`; reports, Wilson intervals, p-values, stability blocks, subgroup metrics and evidence bundles use only the fixed confirmatory sample. Imports are additionally bound to the exact frozen Git commit and eligible entry/exit settlements must anchor to raw VERIFIED/VALID ticks. Known invalidated summaries for P4-001 and P4-002 are built into the frozen authority so they survive a fresh IndexedDB.
 
 See `phase4_protocol_v3.md` and `validation_report_v1.9.2.md`.
+
+## v1.9.3 — Phase 4 exit-quality, temporal-diversity and dependence-sensitivity hardening
+
+v1.9.3 preserves the frozen v1.8.2 signal/evaluation core and changes only the Phase 4 scientific-validation authority. `P4-EURUSDOTC-V182-003` is retained as historical invalidated evidence (10 episodes, 7 correct, 3 incorrect, 70.00%) because the v1.9.2 Phase 4 validator did not require the exit raw tick itself to be `VERIFIED`, `VALID`, and backed by a non-null protocol verification ID. The new confirmatory experiment is `P4-EURUSDOTC-V182-004`.
+
+Protocol v4 enforces raw-tick quality on both entry and exit evidence, caps accepted confirmatory episodes at 50 per UTC date, requires at least 10 UTC dates in the fixed sample of 500, and adds a leave-one-UTC-date-out dependence-sensitivity gate. Each leave-one-date-out sample must retain a Wilson 95% lower bound above 50% before final PASS is possible. The primary exact binomial / Wilson 99% rules remain frozen and unchanged.
+
+Starting the experiment also creates a canonical immutable Phase 4 start attestation. The dashboard can export that attestation separately. The attestation hash is content integrity, not an external signature; operators must preserve the exported attestation or its independently computed hash outside extension IndexedDB immediately after `Start / Freeze Phase 4`.
+
+See `phase4_protocol_v4.md` and `validation_report_v1.9.3.md`.

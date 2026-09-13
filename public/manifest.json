@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "OTC Elite Signal Engine",
-  "version": "1.9.2",
-  "description": "Signal-only quantitative laboratory for Pocket Option OTC research with frozen v1.8.2 scientific core and Phase 4 fixed-N/tick-anchor hardening",
+  "version": "1.9.3",
+  "description": "Signal-only quantitative laboratory for Pocket Option OTC research with frozen v1.8.2 scientific core and Phase 4 protocol-v4 temporal/raw-tick hardening",
   "permissions": [
     "storage",
     "unlimitedStorage",

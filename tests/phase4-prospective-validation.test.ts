@@ -40,7 +40,7 @@ const source = {
 };
 
 const build: Phase4BuildIdentity = {
-  appVersion: '1.9.2',
+  appVersion: '1.9.3',
   buildId: 'test-build',
   sourceTreeSha256: 'a'.repeat(64),
   scientificCoreSha256: PHASE4_BASELINE_SCIENTIFIC_CORE_SHA256,
@@ -50,6 +50,13 @@ const build: Phase4BuildIdentity = {
   gitWorkingTreeClean: true,
   gitProvenance: 'GIT',
 };
+
+const CONFIRMATORY_BASE_UTC = Date.UTC(2026, 0, 1, 0, 0, 0, 0);
+function confirmatoryTime(index: number): number {
+  const utcDateOffset = Math.floor(index / 50);
+  const slot = index % 50;
+  return CONFIRMATORY_BASE_UTC + utcDateOffset * 86_400_000 + slot * 60_000;
+}
 
 function emptySnapshot(): JournalSnapshot {
   return { ticks: [], payoutSnapshots: [], candles: [], decisions: [], entryResolutions: [], decisionSignalLinks: [], signals: [], results: [], continuityEvents: [], transportEvents: [] };
@@ -74,8 +81,10 @@ function signal(id: string, decisionId: string, marketEpisodeId: string, created
 }
 
 function result(signalId: string, evaluatedAt: number, outcome: 'CORRECT' | 'INCORRECT' | 'FLAT' = 'CORRECT', timing = 100): ResultRecord {
+  const referenceExitPrice = outcome === 'FLAT' ? 1.1 : outcome === 'CORRECT' ? 1.2 : 1.0;
+  const exitTickId = `exit-${signalId}`;
   return {
-    resolutionStatus: 'RESOLVED', resultSchemaVersion: '3', resultId: `result-${signalId}`, signalId, evaluationMode: 'REFERENCE_FEED', referenceExitPrice: outcome === 'FLAT' ? 1.1 : outcome === 'CORRECT' ? 1.2 : 1.0, referenceExitTimestamp: evaluatedAt, expiryTimingErrorMs: timing, priceOutcome: outcome === 'FLAT' ? 'FLAT' : outcome === 'CORRECT' ? 'UP' : 'DOWN', directionalOutcome: outcome, economicOutcome: 'UNKNOWN', economicReturn: null, economicEvaluationReason: outcome === 'FLAT' ? 'FLAT_REFERENCE_OUTCOME' : 'PAYOUT_EXPIRATION_UNBOUND', settlementMetadata: { settlementMetadataSchemaVersion: '2', confidence: 'UNKNOWN', source: null, verifiedAt: null }, exitMarketSourceIdentity: source, recoveredAcrossPageSession: false, entryPageSessionId: 'page-1', exitPageSessionId: 'page-1', evaluatedAt,
+    resolutionStatus: 'RESOLVED', resultSchemaVersion: '3', resultId: canonicalEntityHash('RESULT_RESOLVED', 3, { signalId, exitTickId, referenceExitTimestamp: evaluatedAt, referenceExitPrice }), signalId, evaluationMode: 'REFERENCE_FEED', referenceExitPrice, referenceExitTimestamp: evaluatedAt, expiryTimingErrorMs: timing, priceOutcome: outcome === 'FLAT' ? 'FLAT' : outcome === 'CORRECT' ? 'UP' : 'DOWN', directionalOutcome: outcome, economicOutcome: 'UNKNOWN', economicReturn: null, economicEvaluationReason: outcome === 'FLAT' ? 'FLAT_REFERENCE_OUTCOME' : 'PAYOUT_EXPIRATION_UNBOUND', settlementMetadata: { settlementMetadataSchemaVersion: '2', confidence: 'UNKNOWN', source: null, verifiedAt: null }, exitMarketSourceIdentity: source, recoveredAcrossPageSession: false, entryPageSessionId: 'page-1', exitPageSessionId: 'page-1', evaluatedAt,
   };
 }
 
@@ -120,7 +129,7 @@ function datasetFrom(snapshot: JournalSnapshot, configHash: string, createdAt = 
   const manifestBase = {
     datasetSchemaVersion: '10' as const,
     createdAt,
-    appVersion: '1.9.2',
+    appVersion: '1.9.3',
     buildId: build.buildId,
     sourceTreeSha256: build.sourceTreeSha256,
     scientificCoreSha256: build.scientificCoreSha256,
@@ -194,7 +203,7 @@ test('live resync and repeated dataset import never double-count a market episod
 
 test('n below 500 can never pass even with perfect accuracy', async () => {
   const { engine, snapshot } = await startedEngine();
-  for (let index = 0; index < PHASE4_TARGET_SAMPLE_SIZE - 1; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  for (let index = 0; index < PHASE4_TARGET_SAMPLE_SIZE - 1; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), 'CORRECT');
   const report = await engine.syncLiveJournal(snapshot, build, 100_000_000);
   assert.equal(report.prospectiveUniqueStrictEpisodes, 499);
   assert.equal(report.status, 'COLLECTING');
@@ -207,7 +216,7 @@ test('500 stable episodes with strong edge produce PASS', async () => {
   for (let block = 0; block < 5; block += 1) {
     for (let offset = 0; offset < 100; offset += 1) {
       const ordinal = block * 100 + offset + 1;
-      withEpisode(snapshot, ordinal, 20_000 + ordinal * 70_000, offset < 64 ? 'CORRECT' : 'INCORRECT');
+      withEpisode(snapshot, ordinal, confirmatoryTime(ordinal - 1), offset < 64 ? 'CORRECT' : 'INCORRECT');
     }
   }
   const report = await engine.syncLiveJournal(snapshot, build, 100_000_000);
@@ -216,12 +225,16 @@ test('500 stable episodes with strong edge produce PASS', async () => {
   assert.equal(report.confirmatoryEvaluation?.finalStatus, 'PASS');
   assert.equal(report.confirmatoryEvaluation?.correct, 320);
   assert.equal(report.confirmatoryEvaluation?.stabilityGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.temporalDiversityGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.dependenceSensitivityGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.distinctUtcDateCount, 10);
+  assert.equal(report.confirmatoryEvaluation?.maxEpisodesOnSingleUtcDate, 50);
   assert.equal(report.confirmatoryEvaluation?.statisticalGate, 'PASS');
 });
 
 test('500 episodes at chance level produce FAIL', async () => {
   const { engine, snapshot } = await startedEngine();
-  for (let index = 0; index < 500; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, index % 2 === 0 ? 'CORRECT' : 'INCORRECT');
+  for (let index = 0; index < 500; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), index % 2 === 0 ? 'CORRECT' : 'INCORRECT');
   const report = await engine.syncLiveJournal(snapshot, build, 100_000_000);
   assert.equal(report.status, 'FAIL');
   assert.equal(report.confirmatoryEvaluation?.statisticalGate, 'FAIL');
@@ -395,18 +408,18 @@ test('Phase 4 evidence bundle is canonical, complete and checksum-verifiable', a
   const bundle = await engine.evidenceBundle(123_456);
   assert.equal(bundle.acceptedEpisodes.length, 1);
   assert.ok(bundle.auditEvents.length >= 4);
-  const body = { report: bundle.report, experiment: bundle.experiment, acceptedEpisodes: bundle.acceptedEpisodes, importedDatasets: bundle.importedDatasets, exclusions: bundle.exclusions, auditEvents: bundle.auditEvents, evaluations: bundle.evaluations };
+  const body = { report: bundle.report, experiment: bundle.experiment, startAttestation: bundle.startAttestation, acceptedEpisodes: bundle.acceptedEpisodes, importedDatasets: bundle.importedDatasets, exclusions: bundle.exclusions, auditEvents: bundle.auditEvents, evaluations: bundle.evaluations };
   assert.equal(bundle.manifest.bodyChecksumSha256, sha256(new TextEncoder().encode(canonicalJson(body))));
   const { evidenceBundleId: _id, ...manifestBase } = bundle.manifest;
-  assert.equal(bundle.manifest.evidenceBundleId, canonicalEntityHash('PHASE4_EVIDENCE_BUNDLE', 1, manifestBase));
+  assert.equal(bundle.manifest.evidenceBundleId, canonicalEntityHash('PHASE4_EVIDENCE_BUNDLE', 2, manifestBase));
 });
 
 
 test('fixed-N boundary caps live batch at exactly 500 and excludes overflow', async () => {
   const { engine, snapshot } = await startedEngine();
-  for (let index = 0; index < 495; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  for (let index = 0; index < 495; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), 'CORRECT');
   await engine.syncLiveJournal(snapshot, build, 100_000_000);
-  for (let index = 495; index < 505; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  for (let index = 495; index < 505; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), 'CORRECT');
   const report = await engine.syncLiveJournal(snapshot, build, 200_000_000);
   assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
   assert.equal(report.correct, 500);
@@ -416,9 +429,9 @@ test('fixed-N boundary caps live batch at exactly 500 and excludes overflow', as
 
 test('fixed-N boundary caps 499 plus ten at exactly 500', async () => {
   const { engine, snapshot } = await startedEngine();
-  for (let index = 0; index < 499; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  for (let index = 0; index < 499; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), 'CORRECT');
   await engine.syncLiveJournal(snapshot, build, 100_000_000);
-  for (let index = 499; index < 509; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'INCORRECT');
+  for (let index = 499; index < 509; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), 'INCORRECT');
   const report = await engine.syncLiveJournal(snapshot, build, 200_000_000);
   assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
   assert.equal(report.correct, 499);
@@ -428,13 +441,137 @@ test('fixed-N boundary caps 499 plus ten at exactly 500', async () => {
 
 test('fixed-N boundary caps dataset import crossing 500', async () => {
   const { engine, snapshot } = await startedEngine();
-  for (let index = 0; index < 499; index += 1) withEpisode(snapshot, index + 1, 20_000 + index * 70_000, 'CORRECT');
+  for (let index = 0; index < 499; index += 1) withEpisode(snapshot, index + 1, confirmatoryTime(index), 'CORRECT');
   await engine.syncLiveJournal(snapshot, build, 100_000_000);
   const imported = emptySnapshot();
-  for (let index = 499; index < 509; index += 1) withEpisode(imported, index + 1, 20_000 + index * 70_000, 'INCORRECT');
+  for (let index = 499; index < 509; index += 1) withEpisode(imported, index + 1, confirmatoryTime(index), 'INCORRECT');
   const report = await engine.importDatasetJson(JSON.stringify(datasetFrom(imported, 'frozen-config', 200_000_000)), 200_000_000);
   assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
   assert.equal(report.exclusionsByReason.POST_CONFIRMATORY_PERIOD, 9);
+});
+
+
+test('raw tick quality gate rejects unverified or unverifiable entry and exit ticks', async () => {
+  const inferredExit = await startedEngine();
+  withEpisode(inferredExit.snapshot, 610, 20_000, 'CORRECT');
+  const inferredExitTick = inferredExit.snapshot.ticks.find((item) => item.tickId === 'exit-signal-610');
+  if (!inferredExitTick) throw new Error('inferred exit tick missing');
+  inferredExitTick.sourceQuality = 'INFERRED';
+  inferredExitTick.integrity = 'VALID';
+  let report = await inferredExit.engine.syncLiveJournal(inferredExit.snapshot, build, 100_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.RAW_TICK_QUALITY_INVALID, 1);
+
+  const unknownExit = await startedEngine(30_000);
+  withEpisode(unknownExit.snapshot, 611, 40_000, 'CORRECT');
+  const unknownExitTick = unknownExit.snapshot.ticks.find((item) => item.tickId === 'exit-signal-611');
+  if (!unknownExitTick) throw new Error('unknown exit tick missing');
+  unknownExitTick.sourceQuality = 'UNKNOWN';
+  unknownExitTick.integrity = 'SUSPECT';
+  report = await unknownExit.engine.syncLiveJournal(unknownExit.snapshot, build, 200_000);
+  assert.equal(report.exclusionsByReason.RAW_TICK_QUALITY_INVALID, 1);
+
+  const noProtocolExit = await startedEngine(50_000);
+  withEpisode(noProtocolExit.snapshot, 612, 60_000, 'CORRECT');
+  const noProtocolExitTick = noProtocolExit.snapshot.ticks.find((item) => item.tickId === 'exit-signal-612');
+  if (!noProtocolExitTick) throw new Error('protocol-less exit tick missing');
+  noProtocolExitTick.protocolVerificationId = null;
+  report = await noProtocolExit.engine.syncLiveJournal(noProtocolExit.snapshot, build, 300_000);
+  assert.equal(report.exclusionsByReason.RAW_TICK_QUALITY_INVALID, 1);
+
+  const noProtocolEntry = await startedEngine(70_000);
+  withEpisode(noProtocolEntry.snapshot, 613, 80_000, 'CORRECT');
+  const noProtocolEntryTick = noProtocolEntry.snapshot.ticks.find((item) => item.tickId === 'tick-decision-613');
+  if (!noProtocolEntryTick) throw new Error('protocol-less entry tick missing');
+  noProtocolEntryTick.protocolVerificationId = null;
+  report = await noProtocolEntry.engine.syncLiveJournal(noProtocolEntry.snapshot, build, 400_000);
+  assert.equal(report.exclusionsByReason.RAW_TICK_QUALITY_INVALID, 1);
+
+  const verified = await startedEngine(90_000);
+  withEpisode(verified.snapshot, 614, 100_000, 'CORRECT');
+  report = await verified.engine.syncLiveJournal(verified.snapshot, build, 500_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 1);
+});
+
+test('exit resultId binds Phase 4 to the exact raw tick even when a VERIFIED duplicate anchor exists', async () => {
+  const { engine, snapshot } = await startedEngine();
+  withEpisode(snapshot, 615, 20_000, 'CORRECT');
+  const badExit = snapshot.ticks.find((item) => item.tickId === 'exit-signal-615');
+  if (!badExit) throw new Error('bad exit missing');
+  badExit.sourceQuality = 'INFERRED';
+  badExit.integrity = 'VALID';
+  snapshot.ticks.push({ ...badExit, tickId: 'verified-duplicate-exit', sourceQuality: 'VERIFIED', protocolVerificationId: 'TEST_PROTOCOL' });
+  const report = await engine.syncLiveJournal(snapshot, build, 100_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.RAW_TICK_QUALITY_INVALID, 1);
+});
+
+test('schema v10 import rejects recalculated dataset whose exit tick is not VERIFIED', async () => {
+  const { engine } = await startedEngine();
+  const snapshot = emptySnapshot();
+  withEpisode(snapshot, 620, 20_000, 'CORRECT');
+  const dataset = datasetFrom(snapshot, 'frozen-config', 300_000);
+  const exitTick = dataset.ticks.find((item) => item.tickId === 'exit-signal-620');
+  if (!exitTick) throw new Error('exit tick missing');
+  exitTick.sourceQuality = 'INFERRED';
+  exitTick.integrity = 'VALID';
+  const body = { ticks: dataset.ticks, payoutSnapshots: dataset.payoutSnapshots, candles: dataset.candles, decisions: dataset.decisions, entryResolutions: dataset.entryResolutions, decisionSignalLinks: dataset.decisionSignalLinks, signals: dataset.signals, results: dataset.results, continuityEvents: dataset.continuityEvents, transportEvents: dataset.transportEvents };
+  dataset.manifest.checksumSha256 = sha256(new TextEncoder().encode(canonicalJson(body)));
+  const { datasetId: _id, ...manifestBase } = dataset.manifest;
+  dataset.manifest.datasetId = canonicalEntityHash('DATASET', 10, manifestBase);
+  const report = await engine.importDatasetJson(JSON.stringify(dataset), 300_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 0);
+  assert.equal(report.exclusionsByReason.RAW_TICK_QUALITY_INVALID, 1);
+});
+
+test('temporal diversity cap accepts at most 50 confirmatory episodes per UTC date', async () => {
+  const { engine, snapshot } = await startedEngine();
+  const sameUtcDate = Date.UTC(2026, 0, 1, 0, 0, 0, 0);
+  for (let index = 0; index < 51; index += 1) withEpisode(snapshot, index + 1, sameUtcDate + index * 60_000, 'CORRECT');
+  const report = await engine.syncLiveJournal(snapshot, build, 200_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 50);
+  assert.equal(report.distinctUtcDateCount, 1);
+  assert.equal(report.maxEpisodesOnSingleUtcDate, 50);
+  assert.equal(report.exclusionsByReason.TEMPORAL_DAILY_CAP_REACHED, 1);
+});
+
+test('dependence sensitivity gate fails when edge is not robust to removing one UTC-date cluster', async () => {
+  const { engine, snapshot } = await startedEngine();
+  let ordinal = 1;
+  for (let day = 0; day < 10; day += 1) {
+    for (let slot = 0; slot < 50; slot += 1) {
+      let correctTarget: number;
+      if (day === 0) correctTarget = 50;
+      else if (day === 1) correctTarget = 5;
+      else correctTarget = 28;
+      const outcome = slot < correctTarget ? 'CORRECT' : 'INCORRECT';
+      withEpisode(snapshot, ordinal, confirmatoryTime(ordinal - 1), outcome);
+      ordinal += 1;
+    }
+  }
+  const report = await engine.syncLiveJournal(snapshot, build, 300_000_000);
+  assert.equal(report.prospectiveUniqueStrictEpisodes, 500);
+  assert.equal(report.correct, 279);
+  assert.equal(report.confirmatoryEvaluation?.statisticalGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.stabilityGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.temporalDiversityGate, 'PASS');
+  assert.equal(report.confirmatoryEvaluation?.dependenceSensitivityGate, 'FAIL');
+  assert.equal(report.status, 'FAIL');
+  assert.ok((report.confirmatoryEvaluation?.minimumLeaveOneUtcDateOutWilson95Low ?? 1) < 0.5);
+});
+
+test('start attestation is canonical, immutable input evidence and requires external preservation', async () => {
+  const { engine } = await startedEngine();
+  const attestation = await engine.startAttestation();
+  const { attestationId, ...body } = attestation;
+  assert.equal(attestationId, canonicalEntityHash('PHASE4_START_ATTESTATION', 1, body));
+  assert.equal(attestation.externalPreservationRequired, true);
+  assert.equal(attestation.targetSampleSize, 500);
+  assert.equal(attestation.minDistinctUtcDates, 10);
+  assert.equal(attestation.maxEpisodesPerUtcDate, 50);
+  const report = await engine.report();
+  assert.equal(report.startAttestationId, attestationId);
+  assert.equal(report.externalStartAttestationRequired, true);
 });
 
 test('raw tick anchoring rejects tampered entry and exit evidence', async () => {
@@ -458,15 +595,19 @@ test('raw tick anchoring rejects tampered entry and exit evidence', async () => 
 test('historical invalidated experiments survive a fresh repository', async () => {
   const { engine } = await startedEngine();
   const report = await engine.report();
-  assert.equal(report.historicalInvalidatedExperiments.length, 2);
+  assert.equal(report.historicalInvalidatedExperiments.length, 3);
   const first = report.historicalInvalidatedExperiments.find((item) => item.experimentId === 'P4-EURUSDOTC-V182-001');
   const second = report.historicalInvalidatedExperiments.find((item) => item.experimentId === 'P4-EURUSDOTC-V182-002');
+  const third = report.historicalInvalidatedExperiments.find((item) => item.experimentId === 'P4-EURUSDOTC-V182-003');
   assert.equal(first?.correct, 3);
   assert.equal(first?.incorrect, 7);
   assert.ok(/VALIDATION_AUTHORITY_NOT_FULLY_FROZEN/.test(first?.invalidationDetail ?? ''));
   assert.equal(second?.correct, 4);
   assert.equal(second?.incorrect, 6);
   assert.ok(/FIXED_N_BATCH_BOUNDARY_DEFECT/.test(second?.invalidationDetail ?? ''));
+  assert.equal(third?.correct, 7);
+  assert.equal(third?.incorrect, 3);
+  assert.ok(/EXIT_RAW_TICK_QUALITY_NOT_ENFORCED/.test(third?.invalidationDetail ?? ''));
 });
 
 test('full source tree is frozen for live collection and dataset import', async () => {

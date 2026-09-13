@@ -510,6 +510,14 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return true;
   }
 
+  if (message.type === 'EXPORT_PHASE4_START_ATTESTATION_JSON') {
+    void runtime.then(async ({ phase4 }) => {
+      const attestation = await phase4.startAttestation();
+      sendResponse({ filename: `phase4-${attestation.experimentId}-start-attestation.json`, json: JSON.stringify(attestation, null, 2) });
+    }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'Phase 4 start-attestation export failure' }));
+    return true;
+  }
+
   if (message.type === 'EXPORT_PHASE4_REPORT_JSON') {
     void runtime.then(async ({ phase4 }) => {
       const bundle = await phase4.evidenceBundle(Date.now());

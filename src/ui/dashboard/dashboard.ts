@@ -21,6 +21,10 @@ interface Phase4ExperimentResponse {
   alpha: number;
   strictSettlementMaxDelayMs: number;
   stabilityPolicyId: string;
+  temporalDiversityPolicyId: string;
+  minDistinctUtcDates: number;
+  maxEpisodesPerUtcDate: number;
+  dependenceSensitivityPolicyId: string;
 }
 interface Phase4EvaluationResponse {
   finalStatus: 'PASS' | 'FAIL';
@@ -32,9 +36,18 @@ interface Phase4EvaluationResponse {
   wilson99High: number;
   stabilityGate: 'PASS' | 'FAIL';
   statisticalGate: 'PASS' | 'FAIL';
+  temporalDiversityGate: 'PASS' | 'FAIL';
+  dependenceSensitivityGate: 'PASS' | 'FAIL';
+  distinctUtcDateCount: number;
+  maxEpisodesOnSingleUtcDate: number;
+  minimumLeaveOneUtcDateOutAccuracy: number | null;
+  minimumLeaveOneUtcDateOutWilson95Low: number | null;
+  worstExcludedUtcDate: string | null;
 }
 interface Phase4ReportResponse {
   experiment: Phase4ExperimentResponse | null;
+  startAttestationId: string | null;
+  externalStartAttestationRequired: true;
   status: 'NOT_STARTED' | 'COLLECTING' | 'PASS' | 'FAIL' | 'INVALIDATED';
   prospectiveUniqueStrictEpisodes: number;
   targetSampleSize: number;
@@ -51,6 +64,13 @@ interface Phase4ReportResponse {
   confirmatoryEvaluation: Phase4EvaluationResponse | null;
   integrityGate: string;
   stabilityGate: string;
+  temporalDiversityGate: string;
+  dependenceSensitivityGate: string;
+  distinctUtcDateCount: number;
+  maxEpisodesOnSingleUtcDate: number;
+  minimumLeaveOneUtcDateOutAccuracy: number | null;
+  minimumLeaveOneUtcDateOutWilson95Low: number | null;
+  worstExcludedUtcDate: string | null;
   stabilityBlocks: Phase4StabilityBlockResponse[];
   importedDatasetCount: number;
   duplicateEpisodeCount: number;
@@ -165,6 +185,7 @@ const exportButton = document.querySelector<HTMLButtonElement>('#export');
 const startPhase4Button = document.querySelector<HTMLButtonElement>('#start-phase4');
 const importPhase4Button = document.querySelector<HTMLButtonElement>('#import-phase4');
 const exportPhase4Button = document.querySelector<HTMLButtonElement>('#export-phase4');
+const exportPhase4AttestationButton = document.querySelector<HTMLButtonElement>('#export-phase4-attestation');
 const phase4FileInput = document.querySelector<HTMLInputElement>('#phase4-file');
 let loading = false;
 
@@ -352,7 +373,11 @@ async function load(): Promise<void> {
       `Protocol SHA-256: ${response.phase4?.experiment?.protocolSha256 ?? 'N/A'}`,
       `Config hash: ${response.phase4?.experiment?.configHash ?? 'N/A'}`,
       `Prospective start: ${timestamp(response.phase4?.experiment?.prospectiveStartedAt)}`,
+      `Start attestation ID: ${response.phase4?.startAttestationId ?? 'N/A'}`,
+      `External start-attestation preservation required: ${response.phase4?.externalStartAttestationRequired ?? true}`,
       `Primary endpoint: STRICT directional accuracy <= ${response.phase4?.experiment?.strictSettlementMaxDelayMs ?? 1000} ms`,
+      `Temporal diversity policy: ${response.phase4?.experiment?.temporalDiversityPolicyId ?? 'N/A'} | min UTC dates ${response.phase4?.experiment?.minDistinctUtcDates ?? 10} | max/date ${response.phase4?.experiment?.maxEpisodesPerUtcDate ?? 50}`,
+      `Dependence sensitivity policy: ${response.phase4?.experiment?.dependenceSensitivityPolicyId ?? 'N/A'}`,
       `Prospective STRICT unique episodes: ${response.phase4?.prospectiveUniqueStrictEpisodes ?? 0}/${response.phase4?.targetSampleSize ?? 500}`,
       `Remaining: ${response.phase4?.remaining ?? 500}`,
       `Correct / incorrect: ${response.phase4?.correct ?? 0} / ${response.phase4?.incorrect ?? 0}`,
@@ -363,6 +388,8 @@ async function load(): Promise<void> {
       `Confirmatory eligible: ${response.phase4?.confirmatoryEligible ?? false}`,
       `Integrity gate: ${response.phase4?.integrityGate ?? 'PENDING'}`,
       `Stability gate: ${response.phase4?.stabilityGate ?? 'PENDING'}`,
+      `Temporal diversity gate: ${response.phase4?.temporalDiversityGate ?? 'PENDING'} (${response.phase4?.distinctUtcDateCount ?? 0} UTC dates; max ${response.phase4?.maxEpisodesOnSingleUtcDate ?? 0}/date)`,
+      `Dependence sensitivity gate: ${response.phase4?.dependenceSensitivityGate ?? 'PENDING'} (min LODO accuracy ${percent(response.phase4?.minimumLeaveOneUtcDateOutAccuracy)}; min LODO Wilson95 low ${percent(response.phase4?.minimumLeaveOneUtcDateOutWilson95Low)}; worst excluded ${response.phase4?.worstExcludedUtcDate ?? 'N/A'})`,
       `Stability blocks: ${phase4Blocks(response.phase4?.stabilityBlocks)}`,
       `Imported datasets: ${response.phase4?.importedDatasetCount ?? 0}`,
       `Duplicate episodes ignored: ${response.phase4?.duplicateEpisodeCount ?? 0}`,
@@ -412,8 +439,13 @@ async function exportDataset(): Promise<void> {
 async function startPhase4(): Promise<void> {
   if (!confirm('Start and irreversibly freeze Phase 4 prospective validation from this moment? Pre-existing results will not count toward the confirmatory sample.')) return;
   const response = await chrome.runtime.sendMessage({ type: 'START_PHASE4' }) as { error?: string };
-  if (response.error && output) output.textContent = response.error;
+  if (response.error) {
+    if (output) output.textContent = response.error;
+    return;
+  }
   await load();
+  await exportPhase4Attestation();
+  alert('Phase 4 start attestation exported. Preserve this JSON or an independently computed SHA-256 outside extension IndexedDB before relying on the confirmatory run.');
 }
 
 async function importPhase4Dataset(file: File): Promise<void> {
@@ -421,6 +453,20 @@ async function importPhase4Dataset(file: File): Promise<void> {
   const response = await chrome.runtime.sendMessage({ type: 'IMPORT_PHASE4_DATASET_JSON', json }) as { error?: string };
   if (response.error && output) output.textContent = response.error;
   await load();
+}
+
+async function exportPhase4Attestation(): Promise<void> {
+  const response = await chrome.runtime.sendMessage({ type: 'EXPORT_PHASE4_START_ATTESTATION_JSON' }) as { filename?: string; json?: string; error?: string };
+  if (!response.filename || !response.json) {
+    if (output) output.textContent = response.error ?? 'Phase 4 start-attestation export failed';
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([response.json], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = response.filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 async function exportPhase4Report(): Promise<void> {
@@ -447,6 +493,7 @@ phase4FileInput?.addEventListener('change', () => {
   phase4FileInput.value = '';
 });
 exportPhase4Button?.addEventListener('click', () => void exportPhase4Report());
+exportPhase4AttestationButton?.addEventListener('click', () => void exportPhase4Attestation());
 window.setInterval(() => void load(), 2_000);
 void load();
 
