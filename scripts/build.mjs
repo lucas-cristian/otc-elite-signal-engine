@@ -3,6 +3,8 @@ import { copyFileSync, cpSync, mkdirSync, readdirSync, readFileSync, rmSync, sta
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { scientificCoreSha256 } from './scientific-core.mjs';
+import { phase4ValidationAuthoritySha256 } from './phase4-validation-authority.mjs';
+import { phase4ProtocolSha256 } from './phase4-protocol.mjs';
 
 const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
 const appVersion = String(packageJson.version);
@@ -63,6 +65,8 @@ function gitState() {
 
 const sourceTreeSha256 = sourceTreeHash();
 const frozenScientificCoreSha256 = scientificCoreSha256();
+const frozenPhase4ValidationAuthoritySha256 = phase4ValidationAuthoritySha256();
+const frozenPhase4ProtocolSha256 = phase4ProtocolSha256();
 const git = gitState();
 const buildMetadata = {
   appVersion,
@@ -70,6 +74,8 @@ const buildMetadata = {
   buildId: `source-${sourceTreeSha256.slice(0, 16)}`,
   sourceTreeSha256,
   scientificCoreSha256: frozenScientificCoreSha256,
+  phase4ValidationAuthoritySha256: frozenPhase4ValidationAuthoritySha256,
+  phase4ProtocolSha256: frozenPhase4ProtocolSha256,
   gitCommit: git.gitCommit,
   gitWorkingTreeClean: git.gitWorkingTreeClean,
   gitProvenance: git.gitProvenance,

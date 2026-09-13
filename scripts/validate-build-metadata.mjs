@@ -6,6 +6,8 @@ const metadata = JSON.parse(readFileSync('dist/build-metadata.json', 'utf8'));
 if (typeof metadata.appVersion !== 'string' || typeof metadata.buildId !== 'string') throw new Error('build metadata identity missing');
 if (typeof metadata.sourceTreeSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.sourceTreeSha256)) throw new Error('invalid sourceTreeSha256');
 if (typeof metadata.scientificCoreSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.scientificCoreSha256)) throw new Error('invalid scientificCoreSha256');
+if (typeof metadata.phase4ValidationAuthoritySha256 !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.phase4ValidationAuthoritySha256)) throw new Error('invalid phase4ValidationAuthoritySha256');
+if (typeof metadata.phase4ProtocolSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.phase4ProtocolSha256)) throw new Error('invalid phase4ProtocolSha256');
 if (!['GIT', 'ENVIRONMENT', 'UNAVAILABLE'].includes(metadata.gitProvenance)) throw new Error('invalid gitProvenance');
 
 const candidates = [...new Set([process.env.INIT_CWD, process.env.PWD, process.cwd()]

@@ -14,13 +14,15 @@ export interface DatasetAssetFeedHealth {
 }
 
 export interface DatasetManifest {
-  datasetSchemaVersion: '9';
+  datasetSchemaVersion: '10';
   datasetId: string;
   createdAt: number;
   appVersion: string;
   buildId: string;
   sourceTreeSha256: string | null;
   scientificCoreSha256: string | null;
+  phase4ValidationAuthoritySha256: string | null;
+  phase4ProtocolSha256: string | null;
   gitCommit: string | null;
   gitWorkingTreeClean: boolean | null;
   gitProvenance: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';

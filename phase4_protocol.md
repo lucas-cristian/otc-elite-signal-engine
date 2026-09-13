@@ -1,3 +1,5 @@
+> **Historical protocol v1 — superseded by `phase4_protocol_v2.md`. Experiment `P4-EURUSDOTC-V182-001` is retained but technically invalidated after the validation-authority freeze audit.**
+
 # Phase 4 — Prospective Statistical Validation Protocol
 
 Status: implementation ready; experiment is not prospectively active until the user explicitly presses **Start / Freeze Phase 4** in the dashboard.

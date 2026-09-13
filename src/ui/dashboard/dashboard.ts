@@ -12,6 +12,8 @@ interface Phase4ExperimentResponse {
   baselineAppVersion: string;
   baselineStrategyGitCommit: string;
   scientificCoreSha256: string;
+  validationAuthoritySha256: string;
+  protocolSha256: string;
   createdByBuildGitCommit: string;
   configHash: string;
   prospectiveStartedAt: number;
@@ -58,6 +60,7 @@ interface Phase4ReportResponse {
   structureRegimePerformance: Phase4PerformanceSliceResponse[];
   volatilityRegimePerformance: Phase4PerformanceSliceResponse[];
   contributingStrategyPerformance: Phase4PerformanceSliceResponse[];
+  historicalInvalidatedExperiments: Array<{ experimentId: string; status: 'INVALIDATED'; acceptedEpisodes: number; correct: number; incorrect: number; accuracy: number | null; invalidationDetail: string }>;
   economicValidationStatus: 'UNAVAILABLE';
   economicValidationReason: string;
 }
@@ -146,6 +149,8 @@ interface AnalyticsResponse {
   buildId?: string;
   sourceTreeSha256?: string | null;
   scientificCoreSha256?: string | null;
+  phase4ValidationAuthoritySha256?: string | null;
+  phase4ProtocolSha256?: string | null;
   gitCommit?: string | null;
   gitWorkingTreeClean?: boolean | null;
   gitProvenance?: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
@@ -257,6 +262,8 @@ async function load(): Promise<void> {
       `Build ID: ${response.buildId ?? 'N/A'}`,
       `Source tree SHA-256: ${response.sourceTreeSha256 ?? 'N/A'}`,
       `Frozen scientific core SHA-256: ${response.scientificCoreSha256 ?? 'N/A'}`,
+      `Phase 4 validation authority SHA-256: ${response.phase4ValidationAuthoritySha256 ?? 'N/A'}`,
+      `Phase 4 protocol SHA-256: ${response.phase4ProtocolSha256 ?? 'N/A'}`,
       `Git provenance: ${response.gitProvenance ?? 'UNAVAILABLE'}`,
       `Git commit: ${response.gitCommit ?? 'N/A'}`,
       `Git working tree clean: ${response.gitWorkingTreeClean ?? 'N/A'}`,
@@ -341,6 +348,8 @@ async function load(): Promise<void> {
       `Derived status: ${response.phase4?.status ?? 'NOT_STARTED'}`,
       `Strategy baseline: ${response.phase4?.experiment?.baselineAppVersion ?? 'N/A'} @ ${response.phase4?.experiment?.baselineStrategyGitCommit ?? 'N/A'}`,
       `Scientific core: ${response.phase4?.experiment?.scientificCoreSha256 ?? 'N/A'}`,
+      `Validation authority: ${response.phase4?.experiment?.validationAuthoritySha256 ?? 'N/A'}`,
+      `Protocol SHA-256: ${response.phase4?.experiment?.protocolSha256 ?? 'N/A'}`,
       `Config hash: ${response.phase4?.experiment?.configHash ?? 'N/A'}`,
       `Prospective start: ${timestamp(response.phase4?.experiment?.prospectiveStartedAt)}`,
       `Primary endpoint: STRICT directional accuracy <= ${response.phase4?.experiment?.strictSettlementMaxDelayMs ?? 1000} ms`,
@@ -363,6 +372,7 @@ async function load(): Promise<void> {
       `By structure regime (secondary): ${phase4Performance(response.phase4?.structureRegimePerformance)}`,
       `By volatility regime (secondary): ${phase4Performance(response.phase4?.volatilityRegimePerformance)}`,
       `By contributing strategy (exploratory, overlapping): ${phase4Performance(response.phase4?.contributingStrategyPerformance)}`,
+      `Historical invalidated experiments: ${(response.phase4?.historicalInvalidatedExperiments ?? []).map((item) => `${item.experimentId} ${item.correct}/${item.acceptedEpisodes} (${percent(item.accuracy)}) ${item.invalidationDetail}`).join(' | ') || 'none'}`,
       `Economic validation: ${response.phase4?.economicValidationStatus ?? 'UNAVAILABLE'} (${response.phase4?.economicValidationReason ?? 'PAYOUT_EXPIRATION_UNBOUND'})`,
       '',
       'ECONOMIC EVALUATION (FAIL-CLOSED)',

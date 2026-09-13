@@ -15,6 +15,8 @@ interface BuildMetadata {
   buildId: string;
   sourceTreeSha256: string | null;
   scientificCoreSha256: string | null;
+  phase4ValidationAuthoritySha256: string | null;
+  phase4ProtocolSha256: string | null;
   gitCommit: string | null;
   gitWorkingTreeClean: boolean | null;
   gitProvenance: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
@@ -90,18 +92,22 @@ async function loadBuildMetadata(): Promise<BuildMetadata> {
     if (!isRecord(value)) throw new Error('build metadata is not an object');
     const sourceTreeSha256 = value.sourceTreeSha256;
     const scientificCoreSha256 = value.scientificCoreSha256;
+    const phase4ValidationAuthoritySha256 = value.phase4ValidationAuthoritySha256;
+    const phase4ProtocolSha256 = value.phase4ProtocolSha256;
     const gitCommit = value.gitCommit;
     const gitWorkingTreeClean = value.gitWorkingTreeClean;
     const gitProvenance = value.gitProvenance;
     if (typeof value.appVersion !== 'string' || typeof value.buildId !== 'string') throw new Error('build metadata identity missing');
     if (sourceTreeSha256 !== null && typeof sourceTreeSha256 !== 'string') throw new Error('invalid sourceTreeSha256');
     if (scientificCoreSha256 !== null && typeof scientificCoreSha256 !== 'string') throw new Error('invalid scientificCoreSha256');
+    if (phase4ValidationAuthoritySha256 !== null && typeof phase4ValidationAuthoritySha256 !== 'string') throw new Error('invalid phase4ValidationAuthoritySha256');
+    if (phase4ProtocolSha256 !== null && typeof phase4ProtocolSha256 !== 'string') throw new Error('invalid phase4ProtocolSha256');
     if (gitCommit !== null && typeof gitCommit !== 'string') throw new Error('invalid gitCommit');
     if (gitWorkingTreeClean !== null && typeof gitWorkingTreeClean !== 'boolean') throw new Error('invalid gitWorkingTreeClean');
     if (gitProvenance !== 'GIT' && gitProvenance !== 'ENVIRONMENT' && gitProvenance !== 'UNAVAILABLE') throw new Error('invalid gitProvenance');
-    return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, scientificCoreSha256, gitCommit, gitWorkingTreeClean, gitProvenance };
+    return { appVersion: value.appVersion, buildId: value.buildId, sourceTreeSha256, scientificCoreSha256, phase4ValidationAuthoritySha256, phase4ProtocolSha256, gitCommit, gitWorkingTreeClean, gitProvenance };
   } catch {
-    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, scientificCoreSha256: null, gitCommit: null, gitWorkingTreeClean: null, gitProvenance: 'UNAVAILABLE' };
+    return { appVersion: fallbackVersion, buildId: 'runtime-metadata-unavailable', sourceTreeSha256: null, scientificCoreSha256: null, phase4ValidationAuthoritySha256: null, phase4ProtocolSha256: null, gitCommit: null, gitWorkingTreeClean: null, gitProvenance: 'UNAVAILABLE' };
   }
 }
 
@@ -472,8 +478,10 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         gitCommit: buildMetadata.gitCommit,
         gitWorkingTreeClean: buildMetadata.gitWorkingTreeClean,
         gitProvenance: buildMetadata.gitProvenance,
-        scientificBuildProvenanceReady: buildMetadata.gitCommit !== null && buildMetadata.gitProvenance !== 'UNAVAILABLE',
+        scientificBuildProvenanceReady: buildMetadata.gitCommit !== null && buildMetadata.gitProvenance === 'GIT' && buildMetadata.gitWorkingTreeClean === true,
         scientificCoreSha256: buildMetadata.scientificCoreSha256,
+        phase4ValidationAuthoritySha256: buildMetadata.phase4ValidationAuthoritySha256,
+        phase4ProtocolSha256: buildMetadata.phase4ProtocolSha256,
         phase4: phase4Report,
       });
     }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'analytics failure' }));
@@ -504,9 +512,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
 
   if (message.type === 'EXPORT_PHASE4_REPORT_JSON') {
     void runtime.then(async ({ phase4 }) => {
-      const report = await phase4.report();
-      if (!report.experiment) throw new Error('Phase 4 has not started');
-      sendResponse({ filename: `phase4-${report.experiment.experimentId}-report.json`, json: JSON.stringify(report, null, 2) });
+      const bundle = await phase4.evidenceBundle(Date.now());
+      sendResponse({ filename: `phase4-${bundle.experiment.experimentId}-evidence.json`, json: JSON.stringify(bundle, null, 2) });
     }).catch((error: unknown) => sendResponse({ error: error instanceof Error ? error.message : 'Phase 4 report export failure' }));
     return true;
   }
@@ -515,8 +522,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     const nowMs = Date.now();
     superviseShadowConnections(nowMs, false);
     void runtime.then(async ({ journal, pipeline, buildMetadata, phase4 }) => {
-      if (buildMetadata.gitCommit === null || buildMetadata.gitProvenance === 'UNAVAILABLE') {
-        throw new Error('Scientific dataset export blocked: Git provenance unavailable. Run npm run verify inside the Git checkout, reload the extension, and export again.');
+      if (buildMetadata.gitCommit === null || buildMetadata.gitProvenance !== 'GIT' || buildMetadata.gitWorkingTreeClean !== true) {
+        throw new Error('Scientific dataset export blocked: clean GIT provenance is required. Run npm run verify from a clean Git checkout, reload the extension, and export again.');
       }
       const createdAt = Date.now();
       await pipeline.finalizeThrough(createdAt);

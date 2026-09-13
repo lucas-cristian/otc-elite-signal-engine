@@ -12,6 +12,8 @@ export interface ExportMetadata {
   buildId: string;
   sourceTreeSha256: string | null;
   scientificCoreSha256: string | null;
+  phase4ValidationAuthoritySha256: string | null;
+  phase4ProtocolSha256: string | null;
   gitCommit: string | null;
   gitWorkingTreeClean: boolean | null;
   gitProvenance: 'GIT' | 'ENVIRONMENT' | 'UNAVAILABLE';
@@ -55,12 +57,14 @@ export class DatasetExporter {
     }));
     const reconnectTypes = new Set(['PAGE_WS_CLOSE', 'PAGE_WS_ERROR', 'SHADOW_WS_CLOSE', 'SHADOW_RECONNECT_SCHEDULED', 'SHADOW_STALL_DETECTED']);
     const manifestBase = {
-      datasetSchemaVersion: '9' as const,
+      datasetSchemaVersion: '10' as const,
       createdAt: metadata.createdAt,
       appVersion: metadata.appVersion,
       buildId: metadata.buildId,
       sourceTreeSha256: metadata.sourceTreeSha256,
       scientificCoreSha256: metadata.scientificCoreSha256,
+      phase4ValidationAuthoritySha256: metadata.phase4ValidationAuthoritySha256,
+      phase4ProtocolSha256: metadata.phase4ProtocolSha256,
       gitCommit: metadata.gitCommit,
       gitWorkingTreeClean: metadata.gitWorkingTreeClean,
       gitProvenance: metadata.gitProvenance,
@@ -84,7 +88,7 @@ export class DatasetExporter {
       configHashes,
       checksumSha256,
     };
-    const manifest: DatasetManifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 9, manifestBase) };
+    const manifest: DatasetManifest = { ...manifestBase, datasetId: canonicalEntityHash('DATASET', 10, manifestBase) };
     return { manifest, ...body };
   }
 }

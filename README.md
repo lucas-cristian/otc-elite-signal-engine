@@ -287,3 +287,12 @@ The frozen scientific core is checked by `npm run validate:scientific-core`. Any
 See `phase4_protocol.md` for the frozen protocol and `validation_report_v1.9.0.md` for implementation validation.
 
 > After checking out v1.9.0 source, run `npm run verify` inside the Git checkout before reloading the unpacked extension. Generated `dist/` provenance must come from the local Git commit and is intentionally not authoritative when built outside the checkout.
+
+
+## v1.9.1 — Phase 4 validation-authority hardening
+
+v1.9.1 preserves the frozen v1.8.2 signal/evaluation core and hardens only the prospective scientific-validation layer. The previous `P4-EURUSDOTC-V182-001` experiment is retained as historical evidence and automatically marked technically invalidated; its outcomes are not erased. The replacement confirmatory experiment is `P4-EURUSDOTC-V182-002`.
+
+The build now freezes three independent authorities: the signal scientific-core SHA-256, the Phase 4 validation-authority SHA-256, and the Phase 4 protocol SHA-256. Scientific datasets use schema v10 and Phase 4 imports require clean `GIT` provenance, matching core/authority/protocol hashes, manifest/body consistency, canonical checksum/ID integrity, and semantic linkage across decision, resolved entry, signal, expiry and result. Phase 4 evidence export is now a canonical checksum-verifiable bundle containing accepted episodes, exclusions, audit events, imported-dataset records and evaluations.
+
+See `phase4_protocol_v2.md` and `validation_report_v1.9.1.md`.
